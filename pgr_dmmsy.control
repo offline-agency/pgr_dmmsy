@@ -1,0 +1,5 @@
+comment = 'DMMSY deterministic SSSP'
+default_version = '0.1.0'
+relocatable = true
+schema = public
+requires = 'pgrouting'

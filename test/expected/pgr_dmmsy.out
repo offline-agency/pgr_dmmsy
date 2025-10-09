@@ -1,0 +1,262 @@
+-- Test suite for pgr_dmmsy extension
+-- Create test table
+CREATE TABLE test_edges (
+    id BIGSERIAL PRIMARY KEY,
+    source BIGINT NOT NULL,
+    target BIGINT NOT NULL,
+    cost FLOAT8 NOT NULL
+);
+-- Test case 1: Simple path
+-- Graph: 1 -> 2 -> 3 -> 4
+INSERT INTO test_edges (id, source, target, cost) VALUES
+    (1, 1, 2, 1.0),
+    (2, 2, 3, 2.0),
+    (3, 3, 4, 3.0);
+SELECT '-- Test 1: Simple directed path from 1 to 4' AS test;
+                   test                   
+------------------------------------------
+ -- Test 1: Simple directed path from 1 to 4
+(1 row)
+
+SELECT * FROM pgr_dmmsy(
+    'SELECT id, source, target, cost FROM test_edges',
+    1,  -- source
+    4   -- target
+) ORDER BY path_seq;
+ seq | path_seq | node | edge | cost | agg_cost 
+-----+----------+------+------+------+----------
+   4 |        1 |    1 |   -1 |    0 |        0
+   3 |        2 |    2 |    1 |    1 |        1
+   2 |        3 |    3 |    2 |    2 |        3
+   1 |        4 |    4 |    3 |    3 |        6
+(4 rows)
+
+-- Test case 2: Graph with branching
+TRUNCATE test_edges;
+INSERT INTO test_edges (id, source, target, cost) VALUES
+    (1, 1, 2, 1.0),
+    (2, 1, 3, 4.0),
+    (3, 2, 3, 1.0),
+    (4, 2, 4, 5.0),
+    (5, 3, 4, 1.0);
+SELECT '-- Test 2: Shortest path with branching (1 -> 2 -> 3 -> 4)' AS test;
+                        test                        
+----------------------------------------------------
+ -- Test 2: Shortest path with branching (1 -> 2 -> 3 -> 4)
+(1 row)
+
+SELECT * FROM pgr_dmmsy(
+    'SELECT id, source, target, cost FROM test_edges',
+    1,  -- source
+    4   -- target
+) ORDER BY path_seq;
+ seq | path_seq | node | edge | cost | agg_cost 
+-----+----------+------+------+------+----------
+   4 |        1 |    1 |   -1 |    0 |        0
+   3 |        2 |    2 |    1 |    1 |        1
+   2 |        3 |    3 |    3 |    1 |        2
+   1 |        4 |    4 |    5 |    1 |        3
+(4 rows)
+
+-- Test case 3: Undirected graph
+SELECT '-- Test 3: Undirected graph' AS test;
+            test             
+-----------------------------
+ -- Test 3: Undirected graph
+(1 row)
+
+SELECT * FROM pgr_dmmsy(
+    'SELECT id, source, target, cost FROM test_edges',
+    4,  -- source
+    1,  -- target
+    FALSE  -- undirected
+) ORDER BY path_seq;
+ seq | path_seq | node | edge | cost | agg_cost 
+-----+----------+------+------+------+----------
+   4 |        1 |    4 |   -1 |    0 |        0
+   3 |        2 |    3 |    5 |    1 |        1
+   2 |        3 |    2 |    3 |    1 |        2
+   1 |        4 |    1 |    1 |    1 |        3
+(4 rows)
+
+-- Test case 4: More complex graph
+TRUNCATE test_edges;
+INSERT INTO test_edges (id, source, target, cost) VALUES
+    (1, 1, 2, 7.0),
+    (2, 1, 3, 9.0),
+    (3, 1, 6, 14.0),
+    (4, 2, 3, 10.0),
+    (5, 2, 4, 15.0),
+    (6, 3, 4, 11.0),
+    (7, 3, 6, 2.0),
+    (8, 4, 5, 6.0),
+    (9, 5, 6, 9.0);
+SELECT '-- Test 4: Complex graph - shortest path from 1 to 5' AS test;
+                    test                     
+---------------------------------------------
+ -- Test 4: Complex graph - shortest path from 1 to 5
+(1 row)
+
+SELECT * FROM pgr_dmmsy(
+    'SELECT id, source, target, cost FROM test_edges',
+    1,  -- source
+    5   -- target
+) ORDER BY path_seq;
+ seq | path_seq | node | edge | cost | agg_cost 
+-----+----------+------+------+------+----------
+   4 |        1 |    1 |   -1 |    0 |        0
+   3 |        2 |    2 |    1 |    7 |        7
+   2 |        3 |    4 |    5 |   15 |       22
+   1 |        4 |    5 |    8 |    6 |       28
+(4 rows)
+
+-- Test case 5: Multiple shortest paths from source (no target)
+TRUNCATE test_edges;
+INSERT INTO test_edges (id, source, target, cost) VALUES
+    (1, 1, 2, 1.0),
+    (2, 1, 3, 2.0),
+    (3, 2, 4, 1.0),
+    (4, 3, 4, 1.0);
+SELECT '-- Test 5: Source to specific target' AS test;
+              test               
+---------------------------------
+ -- Test 5: Source to specific target
+(1 row)
+
+SELECT * FROM pgr_dmmsy(
+    'SELECT id, source, target, cost FROM test_edges',
+    1,  -- source
+    4   -- target
+) ORDER BY path_seq;
+ seq | path_seq | node | edge | cost | agg_cost 
+-----+----------+------+------+------+----------
+   3 |        1 |    1 |   -1 |    0 |        0
+   2 |        2 |    2 |    1 |    1 |        1
+   1 |        3 |    4 |    3 |    1 |        2
+(3 rows)
+
+-- Test case 6: Disconnected graph (no path)
+TRUNCATE test_edges;
+INSERT INTO test_edges (id, source, target, cost) VALUES
+    (1, 1, 2, 1.0),
+    (2, 3, 4, 1.0);
+SELECT '-- Test 6: Disconnected graph (should return empty)' AS test;
+                    test                     
+---------------------------------------------
+ -- Test 6: Disconnected graph (should return empty)
+(1 row)
+
+SELECT * FROM pgr_dmmsy(
+    'SELECT id, source, target, cost FROM test_edges',
+    1,  -- source
+    4   -- target
+) ORDER BY path_seq;
+ seq | path_seq | node | edge | cost | agg_cost 
+-----+----------+------+------+------+----------
+(0 rows)
+
+-- Test case 7: Self loop
+TRUNCATE test_edges;
+INSERT INTO test_edges (id, source, target, cost) VALUES
+    (1, 1, 1, 0.0);
+SELECT '-- Test 7: Self loop (1 -> 1)' AS test;
+           test            
+---------------------------
+ -- Test 7: Self loop (1 -> 1)
+(1 row)
+
+SELECT * FROM pgr_dmmsy(
+    'SELECT id, source, target, cost FROM test_edges',
+    1,  -- source
+    1   -- target
+) ORDER BY path_seq;
+ seq | path_seq | node | edge | cost | agg_cost 
+-----+----------+------+------+------+----------
+   1 |        1 |    1 |   -1 |    0 |        0
+(1 row)
+
+-- Test case 8: Triangle with different costs
+TRUNCATE test_edges;
+INSERT INTO test_edges (id, source, target, cost) VALUES
+    (1, 1, 2, 1.0),
+    (2, 2, 3, 1.0),
+    (3, 1, 3, 10.0);
+SELECT '-- Test 8: Triangle - verify shortest path (1 -> 2 -> 3 not 1 -> 3)' AS test;
+                           test                            
+-----------------------------------------------------------
+ -- Test 8: Triangle - verify shortest path (1 -> 2 -> 3 not 1 -> 3)
+(1 row)
+
+SELECT * FROM pgr_dmmsy(
+    'SELECT id, source, target, cost FROM test_edges',
+    1,  -- source
+    3   -- target
+) ORDER BY path_seq;
+ seq | path_seq | node | edge | cost | agg_cost 
+-----+----------+------+------+------+----------
+   3 |        1 |    1 |   -1 |    0 |        0
+   2 |        2 |    2 |    1 |    1 |        1
+   1 |        3 |    3 |    2 |    1 |        2
+(3 rows)
+
+-- Test case 9: Testing with max_levels parameter
+TRUNCATE test_edges;
+INSERT INTO test_edges (id, source, target, cost) VALUES
+    (1, 1, 2, 1.0),
+    (2, 2, 3, 1.0),
+    (3, 3, 4, 1.0),
+    (4, 4, 5, 1.0);
+SELECT '-- Test 9: Max levels = 2 (should not reach 5)' AS test;
+                   test                    
+-------------------------------------------
+ -- Test 9: Max levels = 2 (should not reach 5)
+(1 row)
+
+SELECT * FROM pgr_dmmsy(
+    'SELECT id, source, target, cost FROM test_edges',
+    1,     -- source
+    5,     -- target
+    TRUE,  -- directed
+    TRUE,  -- output_predecessors
+    2      -- max_levels
+) ORDER BY path_seq;
+ seq | path_seq | node | edge | cost | agg_cost 
+-----+----------+------+------+------+----------
+(0 rows)
+
+-- Test case 10: Larger graph
+TRUNCATE test_edges;
+INSERT INTO test_edges (id, source, target, cost) VALUES
+    (1, 1, 2, 1.0),
+    (2, 1, 3, 4.0),
+    (3, 2, 3, 2.0),
+    (4, 2, 4, 5.0),
+    (5, 3, 4, 1.0),
+    (6, 3, 5, 3.0),
+    (7, 4, 5, 2.0),
+    (8, 4, 6, 1.0),
+    (9, 5, 6, 4.0),
+    (10, 1, 7, 10.0),
+    (11, 7, 6, 1.0);
+SELECT '-- Test 10: Larger graph - multiple paths from 1 to 6' AS test;
+                    test                     
+---------------------------------------------
+ -- Test 10: Larger graph - multiple paths from 1 to 6
+(1 row)
+
+SELECT * FROM pgr_dmmsy(
+    'SELECT id, source, target, cost FROM test_edges',
+    1,  -- source
+    6   -- target
+) ORDER BY path_seq;
+ seq | path_seq | node | edge | cost | agg_cost 
+-----+----------+------+------+------+----------
+   5 |        1 |    1 |   -1 |    0 |        0
+   4 |        2 |    2 |    1 |    1 |        1
+   3 |        3 |    3 |    3 |    2 |        3
+   2 |        4 |    4 |    5 |    1 |        4
+   1 |        5 |    6 |    8 |    1 |        5
+(5 rows)
+
+-- Clean up
+DROP TABLE test_edges;

@@ -1,0 +1,25 @@
+# Object files
+*.o
+*.so
+*.bc
+
+# Build artifacts
+*.sql.in
+*.control.in
+
+# Test outputs
+regression.diffs
+regression.out
+results/
+
+# Editor files
+*~
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
