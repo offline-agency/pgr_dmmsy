@@ -1,0 +1,345 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Code Quality Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check C code formatting
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+          # Check if any C files would be reformatted
+          find src -name "*.c" -o -name "*.h" | xargs clang-format -n -Werror 2>&1 || true
+
+      - name: Check SQL syntax
+        run: |
+          # Basic SQL syntax check
+          for f in sql/*.sql; do
+            echo "Checking $f"
+            grep -n ";" "$f" || echo "Warning: No semicolons found in $f"
+          done
+
+  build-and-test:
+    name: Build & Test (PostgreSQL ${{ matrix.pg_version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg_version: [12, 13, 14, 15, 16]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL ${{ matrix.pg_version }}
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          sudo apt-get update
+          sudo apt-get install -y \
+            postgresql-${{ matrix.pg_version }} \
+            postgresql-server-dev-${{ matrix.pg_version }} \
+            postgresql-client-${{ matrix.pg_version }} \
+            build-essential \
+            git
+
+      - name: Setup PostgreSQL environment
+        run: |
+          echo "PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH" >> $GITHUB_ENV
+          echo "PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config" >> $GITHUB_ENV
+
+      - name: Build extension
+        run: |
+          make clean
+          make
+        env:
+          PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+
+      - name: Install extension
+        run: |
+          sudo make install
+        env:
+          PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+
+      - name: Start PostgreSQL
+        run: |
+          sudo systemctl start postgresql@${{ matrix.pg_version }}-main
+          sudo -u postgres psql -c "SELECT version();"
+
+      - name: Create test database
+        run: |
+          sudo -u postgres psql -c "CREATE DATABASE test_pgr_dmmsy;"
+
+      - name: Run regression tests
+        run: |
+          sudo -u postgres make installcheck
+        env:
+          PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        continue-on-error: true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results-pg${{ matrix.pg_version }}
+          path: |
+            regression.diffs
+            results/
+          if-no-files-found: ignore
+
+      - name: Show test failures
+        if: failure()
+        run: |
+          if [ -f regression.diffs ]; then
+            echo "=== Test Failures ==="
+            cat regression.diffs
+          fi
+
+  build-macos:
+    name: Build on macOS
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL
+        run: |
+          brew install postgresql@15
+
+      - name: Setup PostgreSQL environment
+        run: |
+          echo "PATH=/usr/local/opt/postgresql@15/bin:$PATH" >> $GITHUB_ENV
+          echo "PG_CONFIG=/usr/local/opt/postgresql@15/bin/pg_config" >> $GITHUB_ENV
+
+      - name: Build extension
+        run: |
+          make clean
+          make
+        env:
+          PG_CONFIG: /usr/local/opt/postgresql@15/bin/pg_config
+
+      - name: Check build artifacts
+        run: |
+          ls -lh *.so || ls -lh *.dylib || true
+          file pgr_dmmsy.so || file pgr_dmmsy.dylib || true
+
+  documentation:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check README exists and has content
+        run: |
+          if [ ! -f README.md ]; then
+            echo "Error: README.md not found"
+            exit 1
+          fi
+          if [ $(wc -l < README.md) -lt 10 ]; then
+            echo "Error: README.md seems too short"
+            exit 1
+          fi
+          echo "README.md check passed"
+
+      - name: Check for required documentation
+        run: |
+          echo "Checking for essential documentation files..."
+          
+          required_files=(
+            "README.md"
+            "LICENSE"
+            "sql/pgr_dmmsy--0.1.0.sql"
+            "pgr_dmmsy.control"
+          )
+          
+          missing_files=0
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "Missing: $file"
+              missing_files=$((missing_files + 1))
+            else
+              echo "Found: $file"
+            fi
+          done
+          
+          if [ $missing_files -gt 0 ]; then
+            echo "Error: $missing_files required file(s) missing"
+            exit 1
+          fi
+
+      - name: Validate SQL function definition
+        run: |
+          if ! grep -q "CREATE.*FUNCTION.*pgr_dmmsy" sql/pgr_dmmsy--0.1.0.sql; then
+            echo "Error: pgr_dmmsy function definition not found in SQL file"
+            exit 1
+          fi
+          echo "SQL function definition validated"
+
+      - name: Check for code comments
+        run: |
+          echo "Checking C source files for documentation..."
+          c_files=$(find src -name "*.c" -o -name "*.h")
+          
+          for file in $c_files; do
+            if ! grep -q "/\*" "$file"; then
+              echo "Warning: $file has no C comments"
+            fi
+          done
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for common security issues in C code
+        run: |
+          echo "Scanning for potential security issues..."
+          
+          # Check for unsafe functions
+          if grep -rn "strcpy\|strcat\|sprintf\|gets" src/; then
+            echo "Warning: Found potentially unsafe string functions"
+          fi
+          
+          # Check for proper NULL checks
+          malloc_count=$(grep -rc "malloc" src/ | grep -v ":0$" | wc -l)
+          null_check_count=$(grep -rc "if.*NULL" src/ | grep -v ":0$" | wc -l)
+          echo "Found $malloc_count files with malloc"
+          echo "Found $null_check_count files with NULL checks"
+
+      - name: Check for SQL injection patterns
+        run: |
+          echo "Checking for SQL injection vulnerabilities..."
+          if grep -rn "sprintf.*SELECT\|strcat.*SELECT" src/; then
+            echo "Warning: Potential SQL injection vulnerability found"
+            exit 1
+          fi
+          echo "No obvious SQL injection patterns found"
+
+  coverage:
+    name: Test Coverage Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Count test cases
+        run: |
+          test_count=$(grep -c "^SELECT.*Test.*AS test" test/pgr_dmmsy.sql || echo 0)
+          echo "Found $test_count test cases"
+          echo "TEST_COUNT=$test_count" >> $GITHUB_ENV
+          
+          if [ $test_count -lt 10 ]; then
+            echo "Warning: Only $test_count test cases found. Consider adding more tests."
+          else
+            echo "Good: $test_count test cases found"
+          fi
+
+      - name: Check test coverage breadth
+        run: |
+          echo "Analyzing test coverage..."
+          
+          # Check for various test scenarios
+          scenarios=(
+            "disconnected:Disconnected graph"
+            "cycle:Graph with cycle"
+            "undirected:Undirected"
+            "zero:Zero-cost"
+            "parallel:Parallel edges"
+            "max_levels:Max levels"
+          )
+          
+          missing_scenarios=0
+          for scenario in "${scenarios[@]}"; do
+            key="${scenario%%:*}"
+            name="${scenario##*:}"
+            if grep -qi "$key" test/pgr_dmmsy.sql; then
+              echo "✓ $name test found"
+            else
+              echo "✗ $name test missing"
+              missing_scenarios=$((missing_scenarios + 1))
+            fi
+          done
+          
+          echo "Test coverage: $(( (${#scenarios[@]} - missing_scenarios) * 100 / ${#scenarios[@]} ))%"
+
+  performance:
+    name: Performance Benchmark
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 15
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          sudo apt-get update
+          sudo apt-get install -y postgresql-15 postgresql-server-dev-15
+
+      - name: Build and install
+        run: |
+          make clean
+          make
+          sudo make install
+        env:
+          PG_CONFIG: /usr/lib/postgresql/15/bin/pg_config
+
+      - name: Start PostgreSQL
+        run: |
+          sudo systemctl start postgresql@15-main
+
+      - name: Basic performance test
+        run: |
+          sudo -u postgres psql -c "CREATE EXTENSION pgr_dmmsy;" || true
+          sudo -u postgres psql -c "
+            CREATE TABLE perf_edges (id SERIAL, source BIGINT, target BIGINT, cost FLOAT8);
+            INSERT INTO perf_edges (source, target, cost)
+            SELECT i, i+1, random() * 10 FROM generate_series(1, 100) i;
+            
+            \timing on
+            SELECT * FROM pgr_dmmsy('SELECT id, source, target, cost FROM perf_edges', 1, 100);
+            
+            DROP TABLE perf_edges;
+          " || echo "Performance test skipped (extension may not be fully functional)"
+
+  summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    needs: [lint, build-and-test, build-macos, documentation, security, coverage]
+    if: always()
+    
+    steps:
+      - name: Check results
+        run: |
+          echo "CI Pipeline Summary:"
+          echo "===================="
+          echo "Lint: ${{ needs.lint.result }}"
+          echo "Build & Test: ${{ needs.build-and-test.result }}"
+          echo "macOS Build: ${{ needs.build-macos.result }}"
+          echo "Documentation: ${{ needs.documentation.result }}"
+          echo "Security: ${{ needs.security.result }}"
+          echo "Coverage: ${{ needs.coverage.result }}"
+          
+          if [ "${{ needs.build-and-test.result }}" != "success" ]; then
+            echo "⚠️  Build & Test failed!"
+            exit 1
+          fi

@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release'
+        required: true
+        type: string
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create source tarball
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION }}
+          tar -czf pgr_dmmsy-${VERSION}.tar.gz \
+            --exclude='.git*' \
+            --exclude='*.o' \
+            --exclude='*.so' \
+            --exclude='*.dylib' \
+            --transform "s,^,pgr_dmmsy-${VERSION}/," \
+            src/ sql/ test/ Makefile pgr_dmmsy.control README.md LICENSE
+
+      - name: Generate release notes
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION }}
+          cat > RELEASE_NOTES.md << EOF
+          # pgr_dmmsy v${VERSION}
+          
+          PostgreSQL extension implementing the DMMSY deterministic SSSP algorithm.
+          
+          ## Installation
+          
+          \`\`\`bash
+          tar -xzf pgr_dmmsy-${VERSION}.tar.gz
+          cd pgr_dmmsy-${VERSION}
+          make
+          sudo make install
+          \`\`\`
+          
+          Then in PostgreSQL:
+          \`\`\`sql
+          CREATE EXTENSION pgr_dmmsy;
+          \`\`\`
+          
+          ## Features
+          
+          - Deterministic O(m log^(2/3) n) shortest path algorithm
+          - Support for directed and undirected graphs
+          - Configurable algorithm parameters
+          - Compatible with pgRouting ecosystem
+          
+          ## Documentation
+          
+          See README.md for full documentation and usage examples.
+          
+          ## References
+          
+          Based on "Breaking the Sorting Barrier for Directed Single-Source Shortest Paths"
+          by Duan, Mao, Mao, Shu, and Yin (2025)
+          https://arxiv.org/abs/2504.17033
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: pgr_dmmsy-${{ steps.get_version.outputs.VERSION }}.tar.gz
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-packages:
+    name: Build Package for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: create-release
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-20.04, macos-latest]
+        pg_version: [15]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          sudo apt-get update
+          sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
+
+      - name: Install PostgreSQL (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install postgresql@${{ matrix.pg_version }}
+
+      - name: Build extension
+        run: |
+          make clean
+          make
+
+      - name: Create package
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          OS_NAME="${{ matrix.os }}"
+          ARCH=$(uname -m)
+          
+          mkdir -p package/usr/local/lib/postgresql
+          mkdir -p package/usr/local/share/postgresql/extension
+          
+          cp pgr_dmmsy.so package/usr/local/lib/postgresql/ || cp pgr_dmmsy.dylib package/usr/local/lib/postgresql/ || true
+          cp sql/*.sql package/usr/local/share/postgresql/extension/
+          cp pgr_dmmsy.control package/usr/local/share/postgresql/extension/
+          
+          tar -czf pgr_dmmsy-${VERSION}-${OS_NAME}-${ARCH}.tar.gz -C package .
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: packages
+          path: pgr_dmmsy-*.tar.gz
+
