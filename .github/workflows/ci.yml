@@ -94,9 +94,9 @@ jobs:
 
       - name: Start PostgreSQL
         run: |
-          sudo pg_ctlcluster ${{ matrix.pg_version }} main start || \
-            sudo systemctl start postgresql@${{ matrix.pg_version }}-main || true
-          until sudo -u postgres pg_isready; do sleep 1; done
+          sudo pg_createcluster --start ${{ matrix.pg_version }} main 2>/dev/null || \
+            sudo pg_ctlcluster ${{ matrix.pg_version }} main start 2>/dev/null || true
+          until sudo -u postgres pg_isready -t 30; do sleep 1; done
           sudo -u postgres psql -c "SELECT version();"
 
       - name: Create test database and load extensions
@@ -337,9 +337,9 @@ jobs:
 
       - name: Start PostgreSQL
         run: |
-          sudo pg_ctlcluster 16 main start || \
-            sudo systemctl start postgresql@16-main || true
-          until sudo -u postgres pg_isready; do sleep 1; done
+          sudo pg_createcluster --start 16 main 2>/dev/null || \
+            sudo pg_ctlcluster 16 main start 2>/dev/null || true
+          until sudo -u postgres pg_isready -t 30; do sleep 1; done
 
       - name: Run basic timing benchmark
         run: |

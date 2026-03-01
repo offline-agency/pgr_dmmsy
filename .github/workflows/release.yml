@@ -1,150 +1,307 @@
 name: Release
 
+# Fires on every push to main (i.e. merged PR).
+# Reads the version from pgr_dmmsy.control.
+# If the tag vX.Y.Z already exists → nothing happens.
+# If the tag is new → builds Linux / macOS / Windows binaries in
+# parallel, then publishes a GitHub release with all artifacts.
+
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches: [main]
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Version to release'
-        required: true
-        type: string
+      force_version:
+        description: 'Force release for this version (e.g. 0.1.0). Leave empty to use pgr_dmmsy.control.'
+        required: false
 
 jobs:
-  create-release:
-    name: Create Release
+  # ============================================================
+  # 1. Detect version and create tag if it is new
+  # ============================================================
+  check-and-tag:
+    name: Check version and tag
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.get_version.outputs.VERSION }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      version: ${{ steps.detect.outputs.version }}
+      should_release: ${{ steps.detect.outputs.should_release }}
+    permissions:
+      contents: write
 
-      - name: Get version
-        id: get_version
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full tag history
+
+      - name: Detect version and decide whether to release
+        id: detect
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "VERSION=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          if [ -n "${{ inputs.force_version }}" ]; then
+            VERSION="${{ inputs.force_version }}"
           else
-            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+            VERSION=$(grep default_version pgr_dmmsy.control | cut -d"'" -f2)
           fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          git fetch --tags --quiet
+          if git tag | grep -qx "v${VERSION}"; then
+            echo "Tag v${VERSION} already exists — skipping release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version v${VERSION} detected — will release."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push tag
+        if: steps.detect.outputs.should_release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${{ steps.detect.outputs.version }}
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+
+  # ============================================================
+  # 2a. Linux build (x86_64, PostgreSQL 16)
+  # ============================================================
+  build-linux:
+    name: Build Linux (x86_64, PG 16)
+    runs-on: ubuntu-latest
+    needs: check-and-tag
+    if: needs.check-and-tag.outputs.should_release == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add PostgreSQL apt repository
+        run: |
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update -qq
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-server-dev-16 \
+            postgresql-16-postgis-3 \
+            postgresql-16-pgrouting \
+            build-essential
+
+      - name: Build extension
+        run: make clean && make PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config
+
+      - name: Package
+        run: |
+          VERSION=${{ needs.check-and-tag.outputs.version }}
+          mkdir -p dist
+          cp pgr_dmmsy.so dist/
+          cp sql/pgr_dmmsy--*.sql dist/
+          cp pgr_dmmsy.control dist/
+          tar -czf pgr_dmmsy-v${VERSION}-linux-x86_64.tar.gz -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: pgr_dmmsy-v*-linux-x86_64.tar.gz
+          retention-days: 7
+
+  # ============================================================
+  # 2b. macOS build (arm64, PostgreSQL 16)
+  # ============================================================
+  build-macos:
+    name: Build macOS (arm64, PG 16)
+    runs-on: macos-latest
+    needs: check-and-tag
+    if: needs.check-and-tag.outputs.should_release == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          brew install postgresql@16 pgrouting
+          brew link postgresql@16 --force
+
+      - name: Build extension
+        run: make clean && make PG_CONFIG=/opt/homebrew/opt/postgresql@16/bin/pg_config
+
+      - name: Package
+        run: |
+          VERSION=${{ needs.check-and-tag.outputs.version }}
+          mkdir -p dist
+          cp pgr_dmmsy.dylib dist/ 2>/dev/null || cp pgr_dmmsy.so dist/ 2>/dev/null || true
+          cp sql/pgr_dmmsy--*.sql dist/
+          cp pgr_dmmsy.control dist/
+          tar -czf pgr_dmmsy-v${VERSION}-macos-arm64.tar.gz -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: pgr_dmmsy-v*-macos-arm64.tar.gz
+          retention-days: 7
+
+  # ============================================================
+  # 2c. Windows build (x86_64, PostgreSQL 16)  — best-effort
+  # ============================================================
+  build-windows:
+    name: Build Windows (x86_64, PG 16)
+    runs-on: windows-latest
+    needs: check-and-tag
+    if: needs.check-and-tag.outputs.should_release == 'true'
+    continue-on-error: true   # Windows builds are best-effort
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 16 (includes headers and pg_config)
+        shell: pwsh
+        run: |
+          choco install postgresql16 --params '/Password:postgres' --yes 2>&1 | Out-Null
+          $pgBin = "C:\Program Files\PostgreSQL\16\bin"
+          echo "$pgBin" | Out-File -Append -FilePath $env:GITHUB_PATH
+          echo "PG_CONFIG=$pgBin\pg_config.exe" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Build extension (MinGW gcc via Git Bash)
+        shell: bash
+        run: |
+          PG_INC=$(pg_config --includedir-server)
+          PG_INC2=$(pg_config --includedir)
+          PG_LIB=$(pg_config --pkglibdir)
+          gcc -shared -o pgr_dmmsy.dll \
+            src/dmmsy.c src/graph.c src/minheap.c \
+            src/ds_blocklist.c src/dmmsy_algorithm.c \
+            -I"$PG_INC" -I"$PG_INC2" \
+            -L"$PG_LIB" -lm
+
+      - name: Package
+        shell: bash
+        run: |
+          VERSION=${{ needs.check-and-tag.outputs.version }}
+          mkdir -p dist
+          cp pgr_dmmsy.dll dist/
+          cp sql/pgr_dmmsy--*.sql dist/
+          cp pgr_dmmsy.control dist/
+          cd dist && zip -j ../pgr_dmmsy-v${VERSION}-windows-x86_64.zip ./*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: pgr_dmmsy-v*-windows-x86_64.zip
+          retention-days: 7
+
+  # ============================================================
+  # 3. Create GitHub release and attach all artifacts
+  # ============================================================
+  create-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [check-and-tag, build-linux, build-macos, build-windows]
+    if: needs.check-and-tag.outputs.should_release == 'true'
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
 
       - name: Create source tarball
         run: |
-          VERSION=${{ steps.get_version.outputs.VERSION }}
-          tar -czf pgr_dmmsy-${VERSION}.tar.gz \
-            --exclude='.git*' \
+          VERSION=${{ needs.check-and-tag.outputs.version }}
+          tar -czf pgr_dmmsy-v${VERSION}-source.tar.gz \
+            --exclude='.git' \
             --exclude='*.o' \
             --exclude='*.so' \
             --exclude='*.dylib' \
+            --exclude='*.dll' \
             --transform "s,^,pgr_dmmsy-${VERSION}/," \
-            src/ sql/ test/ Makefile pgr_dmmsy.control README.md LICENSE
+            src/ sql/ verify/ Makefile pgr_dmmsy.control \
+            README.md COMPILE.md
+
+      - name: Collect artifact files
+        run: |
+          mkdir -p release_files
+          find artifacts/ -type f -exec cp {} release_files/ \;
+          cp pgr_dmmsy-v*-source.tar.gz release_files/
 
       - name: Generate release notes
         run: |
-          VERSION=${{ steps.get_version.outputs.VERSION }}
+          VERSION=${{ needs.check-and-tag.outputs.version }}
           cat > RELEASE_NOTES.md << EOF
-          # pgr_dmmsy v${VERSION}
-          
-          PostgreSQL extension implementing the DMMSY deterministic SSSP algorithm.
-          
-          ## Installation
-          
+          ## pgr_dmmsy v${VERSION}
+
+          PostgreSQL extension implementing the **DMMSY** deterministic single-source
+          shortest path algorithm — O(m log²⁻³ n) time complexity.
+
+          Based on: [Breaking the Sorting Barrier for Directed Single-Source Shortest Paths](https://arxiv.org/abs/2504.17033)
+          (Duan, Mao, Mao, Shu, Yin 2025)
+
+          ---
+
+          ### Downloads
+
+          | Platform | File |
+          |----------|------|
+          | Linux x86\_64 (PG 16) | \`pgr_dmmsy-v${VERSION}-linux-x86_64.tar.gz\` |
+          | macOS arm64 (PG 16) | \`pgr_dmmsy-v${VERSION}-macos-arm64.tar.gz\` |
+          | Windows x86\_64 (PG 16) | \`pgr_dmmsy-v${VERSION}-windows-x86_64.zip\` |
+          | Source | \`pgr_dmmsy-v${VERSION}-source.tar.gz\` |
+
+          ---
+
+          ### Install (Linux / macOS)
+
           \`\`\`bash
-          tar -xzf pgr_dmmsy-${VERSION}.tar.gz
-          cd pgr_dmmsy-${VERSION}
-          make
-          sudo make install
+          tar xzf pgr_dmmsy-v${VERSION}-<platform>.tar.gz
+          sudo cp pgr_dmmsy.so  \$(pg_config --pkglibdir)/          # Linux
+          # sudo cp pgr_dmmsy.dylib \$(pg_config --pkglibdir)/      # macOS
+          sudo cp pgr_dmmsy--*.sql pgr_dmmsy.control \$(pg_config --sharedir)/extension/
           \`\`\`
-          
-          Then in PostgreSQL:
+
+          ### Install (Windows)
+
+          Unzip and copy:
+          - \`pgr_dmmsy.dll\` → \`pg_config --pkglibdir\`
+          - \`pgr_dmmsy--*.sql\`, \`pgr_dmmsy.control\` → \`pg_config --sharedir/extension\`
+
+          ### Enable in PostgreSQL
+
           \`\`\`sql
+          CREATE EXTENSION pgrouting;
           CREATE EXTENSION pgr_dmmsy;
           \`\`\`
-          
-          ## Features
-          
-          - Deterministic O(m log^(2/3) n) shortest path algorithm
-          - Support for directed and undirected graphs
-          - Configurable algorithm parameters
-          - Compatible with pgRouting ecosystem
-          
-          ## Documentation
-          
-          See README.md for full documentation and usage examples.
-          
-          ## References
-          
-          Based on "Breaking the Sorting Barrier for Directed Single-Source Shortest Paths"
-          by Duan, Mao, Mao, Shu, and Yin (2025)
-          https://arxiv.org/abs/2504.17033
+
+          ### Usage
+
+          \`\`\`sql
+          SELECT * FROM pgr_dmmsy(
+            'SELECT id, source, target, cost FROM edges',
+            1,    -- source vertex
+            100   -- target vertex (omit for all-paths from source)
+          );
+          \`\`\`
+
+          See [README.md](https://github.com/${{ github.repository }}/blob/main/README.md)
+          and [COMPILE.md](https://github.com/${{ github.repository }}/blob/main/COMPILE.md)
+          for full documentation.
           EOF
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
         with:
-          files: pgr_dmmsy-${{ steps.get_version.outputs.VERSION }}.tar.gz
+          tag_name: v${{ needs.check-and-tag.outputs.version }}
+          name: pgr_dmmsy v${{ needs.check-and-tag.outputs.version }}
           body_path: RELEASE_NOTES.md
+          files: release_files/*
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-packages:
-    name: Build Package for ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    needs: create-release
-    strategy:
-      matrix:
-        os: [ubuntu-22.04, ubuntu-20.04, macos-latest]
-        pg_version: [15]
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install PostgreSQL (Ubuntu)
-        if: runner.os == 'Linux'
-        run: |
-          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-          sudo apt-get update
-          sudo apt-get install -y \
-            postgresql-${{ matrix.pg_version }} \
-            postgresql-server-dev-${{ matrix.pg_version }} \
-            postgresql-${{ matrix.pg_version }}-pgrouting
-
-      - name: Install PostgreSQL (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install postgresql@${{ matrix.pg_version }}
-
-      - name: Build extension
-        run: |
-          make clean
-          make
-
-      - name: Create package
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          OS_NAME="${{ matrix.os }}"
-          ARCH=$(uname -m)
-          
-          mkdir -p package/usr/local/lib/postgresql
-          mkdir -p package/usr/local/share/postgresql/extension
-          
-          cp pgr_dmmsy.so package/usr/local/lib/postgresql/ || cp pgr_dmmsy.dylib package/usr/local/lib/postgresql/ || true
-          cp sql/*.sql package/usr/local/share/postgresql/extension/
-          cp pgr_dmmsy.control package/usr/local/share/postgresql/extension/
-          
-          tar -czf pgr_dmmsy-${VERSION}-${OS_NAME}-${ARCH}.tar.gz -C package .
-
-      - name: Upload package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pgr_dmmsy-${{ matrix.os }}-pg${{ matrix.pg_version }}-${{ needs.create-release.outputs.version }}
-          path: pgr_dmmsy-*.tar.gz
-          retention-days: 90
-
