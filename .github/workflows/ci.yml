@@ -307,6 +307,7 @@ jobs:
           files: test/c/coverage.info
           flags: c-unit-tests
           fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Count SQL test cases
         run: |
