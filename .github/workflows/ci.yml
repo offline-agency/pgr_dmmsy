@@ -292,7 +292,7 @@ jobs:
 
       - name: Build and run C unit tests with coverage
         run: |
-          cd test/c && make coverage 2>&1 | tee /tmp/c_test_output.txt
+          cd test/c && make coverage-build 2>&1 | tee /tmp/c_test_output.txt
 
       - name: Report test results
         run: |
@@ -301,10 +301,25 @@ jobs:
           echo "C unit tests: $PASSED passed, $FAILED failed"
           if [ "$FAILED" -gt 0 ]; then exit 1; fi
 
+      - name: Generate lcov report
+        run: |
+          # Run lcov from the project root so --base-directory . makes src/
+          # files internal (not external). Previously lcov ran from test/c/,
+          # which caused --no-external to silently drop all ../../src/ files,
+          # producing an empty coverage.info.
+          lcov --capture \
+               --directory test/c \
+               --base-directory . \
+               --output-file coverage.info \
+               --no-external
+          lcov --remove coverage.info '*/test/c/test_*' '/usr/*' \
+               --output-file coverage.info
+          lcov --list coverage.info
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
-          files: test/c/coverage.info
+          files: coverage.info
           flags: c-unit-tests
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}

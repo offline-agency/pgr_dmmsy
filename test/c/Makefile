@@ -52,12 +52,24 @@ clean:
 # tests, then generates an lcov coverage.info for Codecov upload.
 # Does NOT affect the default 'all' / 'run' targets.
 # ---------------------------------------------------------------
-.PHONY: coverage
-coverage:
+# Build with gcov instrumentation and run all tests (generates .gcda files).
+# lcov is intentionally NOT run here; run it from the project root so that
+# --base-directory correctly marks src/ as internal, not external.
+.PHONY: coverage-build
+coverage-build:
 	$(MAKE) clean
 	$(MAKE) CFLAGS="$(CFLAGS) --coverage" LDFLAGS="$(LDFLAGS) --coverage"
 	./test_graph && ./test_minheap && ./test_algorithm && ./test_edge_cases
-	lcov --capture --directory . --directory ../../src \
-	     --output-file coverage.info --no-external
-	lcov --remove coverage.info '*/test_*' --output-file coverage.info
+
+# Convenience alias for local use: coverage-build + lcov with --base-directory
+# pointing to the project root so src/ files are not filtered as external.
+.PHONY: coverage
+coverage: coverage-build
+	lcov --capture \
+	     --directory . \
+	     --directory ../../src \
+	     --base-directory ../.. \
+	     --output-file coverage.info \
+	     --no-external
+	lcov --remove coverage.info '*/test/c/test_*' --output-file coverage.info
 
