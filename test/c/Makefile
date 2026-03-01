@@ -1,7 +1,7 @@
 # Makefile for C unit tests
 
 CC = gcc
-CFLAGS = -Wall -Wextra -g -O0 -I../../src
+CFLAGS = -Wall -Wextra -g -O0 -I../../src -DNO_PG_HEADERS
 LDFLAGS = -lm
 
 # Source files from main project

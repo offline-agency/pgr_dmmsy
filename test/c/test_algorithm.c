@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <math.h>
+#include <float.h>
 #include "../../src/dmmsy.h"
 #include "../../src/graph.h"
 
@@ -312,9 +313,143 @@ void test_path_reconstruction(void) {
     PASS();
 }
 
+/* ---------------------------------------------------------------
+ * DMMSY-specific tests
+ * --------------------------------------------------------------- */
+
+/*
+ * BF convergence: on a chain of exactly k hops (where k is the
+ * computed BF-rounds parameter), all vertices should be reachable
+ * in 1 DMMSY phase with param_k == chain_length.
+ */
+void test_bellman_ford_rounds_settle_chain(void) {
+    TEST("bellman_ford_rounds_settle_chain");
+
+    /* Chain: 1->2->3->4  (3 edges, all within one BF sweep with k=3) */
+    Graph *graph = graph_create(10);
+    Edge e1 = {1, 1, 2, 0.1};
+    Edge e2 = {2, 2, 3, 0.1};
+    Edge e3 = {3, 3, 4, 0.1};
+
+    graph_add_edge(graph, &e1);
+    graph_add_edge(graph, &e2);
+    graph_add_edge(graph, &e3);
+
+    /* Force param_k=3 so a single BF pass settles the whole chain */
+    DMMSYParams params = {
+        .source = 1,
+        .target = 4,
+        .directed = true,
+        .output_predecessors = true,
+        .max_levels = -1,
+        .param_k = 3,
+        .param_t = 1,
+        .constant_degree = false
+    };
+
+    DMMSYResult *result = dmmsy_compute(graph, &params);
+    assert(result != NULL);
+
+    int64_t idx4 = graph_get_vertex_index(graph, 4);
+    assert(double_equal(result->distances[idx4], 0.3));
+
+    dmmsy_result_free(result);
+    graph_free(graph);
+    PASS();
+}
+
+/*
+ * Distances must be identical regardless of k and t values.
+ * k=1 and k=10 must produce the same shortest-path distances.
+ */
+void test_k_t_params_produce_same_distances(void) {
+    TEST("k_t_params_produce_same_distances");
+
+    /* Build a small random-ish graph */
+    Graph *g1 = graph_create(10);
+    Graph *g2 = graph_create(10);
+    Edge edges[] = {
+        {1, 1, 2, 3.0}, {2, 1, 3, 7.0}, {3, 2, 3, 1.0},
+        {4, 2, 4, 5.0}, {5, 3, 4, 2.0}, {6, 4, 5, 1.0}
+    };
+    int ne = 6, i;
+    for (i = 0; i < ne; i++) {
+        graph_add_edge(g1, &edges[i]);
+        graph_add_edge(g2, &edges[i]);
+    }
+
+    DMMSYParams p1 = {.source=1, .target=-1, .directed=true,
+                      .output_predecessors=true, .max_levels=-1,
+                      .param_k=1, .param_t=1, .constant_degree=false};
+    DMMSYParams p2 = {.source=1, .target=-1, .directed=true,
+                      .output_predecessors=true, .max_levels=-1,
+                      .param_k=10, .param_t=5, .constant_degree=false};
+
+    DMMSYResult *r1 = dmmsy_compute(g1, &p1);
+    DMMSYResult *r2 = dmmsy_compute(g2, &p2);
+    assert(r1 != NULL && r2 != NULL);
+    assert(r1->num_vertices == r2->num_vertices);
+
+    for (i = 0; i < (int)r1->num_vertices; i++) {
+        if (r1->distances[i] == DBL_MAX && r2->distances[i] == DBL_MAX)
+            continue;
+        assert(double_equal(r1->distances[i], r2->distances[i]));
+    }
+
+    dmmsy_result_free(r1);
+    dmmsy_result_free(r2);
+    graph_free(g1);
+    graph_free(g2);
+    PASS();
+}
+
+/*
+ * Distance monotonicity: agg_cost along any returned path is
+ * non-decreasing (each step costs >= 0, so cumulative cost only grows).
+ */
+void test_distance_monotonicity_along_path(void) {
+    TEST("distance_monotonicity_along_path");
+
+    /* Grid-like graph: source at 1, target at 9 */
+    Graph *graph = graph_create(20);
+    Edge edges[] = {
+        {1, 1, 2, 1.0}, {2, 1, 4, 2.0},
+        {3, 2, 3, 1.0}, {4, 2, 5, 3.0},
+        {5, 3, 6, 1.0},
+        {6, 4, 5, 1.0}, {7, 4, 7, 2.0},
+        {8, 5, 6, 1.0}, {9, 5, 8, 2.0},
+        {10, 6, 9, 1.0},
+        {11, 7, 8, 1.0},
+        {12, 8, 9, 1.0}
+    };
+    int ne = 12, i;
+    for (i = 0; i < ne; i++) graph_add_edge(graph, &edges[i]);
+
+    DMMSYParams params = {.source=1, .target=9, .directed=true,
+                          .output_predecessors=true, .max_levels=-1,
+                          .param_k=-1, .param_t=-1, .constant_degree=false};
+
+    DMMSYResult *result = dmmsy_compute(graph, &params);
+    assert(result != NULL);
+
+    int path_length;
+    PathResult *path = dmmsy_get_path(graph, result, 1, 9, &path_length);
+    assert(path != NULL);
+    assert(path_length > 0);
+
+    for (i = 1; i < path_length; i++) {
+        assert(path[i].agg_cost >= path[i-1].agg_cost - EPSILON);
+    }
+
+    free(path);
+    dmmsy_result_free(result);
+    graph_free(graph);
+    PASS();
+}
+
 int main(void) {
     printf("=== Algorithm Unit Tests ===\n\n");
-    
+
     test_simple_path();
     test_shortest_path_selection();
     test_disconnected_graph();
@@ -323,7 +458,12 @@ int main(void) {
     test_zero_cost_edges();
     test_custom_parameters();
     test_path_reconstruction();
-    
+
+    /* DMMSY-specific tests */
+    test_bellman_ford_rounds_settle_chain();
+    test_k_t_params_produce_same_distances();
+    test_distance_monotonicity_along_path();
+
     printf("\n✅ All algorithm tests passed!\n");
     return 0;
 }
