@@ -23,8 +23,8 @@ RETURNS TABLE (
     cost FLOAT8,
     agg_cost FLOAT8
 )
-AS 'MODULE_PATHNAME', 'pgr_dmmsy_c'
-LANGUAGE C VOLATILE STRICT PARALLEL SAFE;
+AS '$libdir/pgr_dmmsy', 'pgr_dmmsy_c'
+LANGUAGE C VOLATILE PARALLEL SAFE;
 
 COMMENT ON FUNCTION pgr_dmmsy(TEXT, BIGINT, BIGINT, BOOLEAN, BOOLEAN, INTEGER, INTEGER, INTEGER, BOOLEAN) IS 
 'pgr_dmmsy - Deterministic directed single-source shortest path algorithm

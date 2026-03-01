@@ -1,8 +1,13 @@
 #ifndef DMMSY_H
 #define DMMSY_H
 
+/* PostgreSQL headers are only available in the extension build context.
+ * When compiling standalone unit tests, define NO_PG_HEADERS to skip them. */
+#ifndef NO_PG_HEADERS
 #include "postgres.h"
 #include "fmgr.h"
+#endif
+
 #include "graph.h"
 #include <stdbool.h>
 
