@@ -303,23 +303,21 @@ jobs:
 
       - name: Generate lcov report
         run: |
-          # Run lcov from the project root so --base-directory . makes src/
-          # files internal (not external). Previously lcov ran from test/c/,
-          # which caused --no-external to silently drop all ../../src/ files,
-          # producing an empty coverage.info.
-          lcov --capture \
-               --directory test/c \
-               --base-directory . \
-               --output-file coverage.info \
-               --no-external
-          lcov --remove coverage.info '*/test/c/test_*' '/usr/*' \
+          cd test/c
+          # Capture from test/c/ so relative source paths embedded in .gcno
+          # (test_graph.c, ../../src/graph.c, etc.) resolve correctly.
+          # All resulting SF: entries in coverage_raw.info are absolute paths.
+          lcov --capture --directory . --output-file coverage_raw.info
+          # Keep only library source files; drops test harness and system headers.
+          lcov --extract coverage_raw.info '*/src/*.c' \
                --output-file coverage.info
+          rm -f coverage_raw.info
           lcov --list coverage.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
-          files: coverage.info
+          files: test/c/coverage.info
           flags: c-unit-tests
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}

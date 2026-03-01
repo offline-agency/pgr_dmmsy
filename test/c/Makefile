@@ -61,15 +61,13 @@ coverage-build:
 	$(MAKE) CFLAGS="$(CFLAGS) --coverage" LDFLAGS="$(LDFLAGS) --coverage"
 	./test_graph && ./test_minheap && ./test_algorithm && ./test_edge_cases
 
-# Convenience alias for local use: coverage-build + lcov with --base-directory
-# pointing to the project root so src/ files are not filtered as external.
+# Convenience alias for local use: coverage-build + lcov.
+# Capture all .gcda data from this directory (relative source paths in .gcno
+# resolve correctly from here), then extract only src/ files.
 .PHONY: coverage
 coverage: coverage-build
-	lcov --capture \
-	     --directory . \
-	     --directory ../../src \
-	     --base-directory ../.. \
-	     --output-file coverage.info \
-	     --no-external
-	lcov --remove coverage.info '*/test/c/test_*' --output-file coverage.info
+	lcov --capture --directory . --output-file coverage_raw.info
+	lcov --extract coverage_raw.info '*/src/*.c' --output-file coverage.info
+	rm -f coverage_raw.info
+	lcov --list coverage.info
 
