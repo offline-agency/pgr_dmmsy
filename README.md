@@ -107,14 +107,43 @@ A* (target): 25 ms
 - Full **predecessor tracking** for path reconstruction
 - Compatible with **pgRouting** ecosystem
 
+## Quick Start with Docker
+
+The fastest way to get a working environment with no local PostgreSQL setup:
+
+```bash
+# 1. Build the image (compiles the extension + runs 38 C unit tests)
+docker compose build db
+
+# 2. Start PostgreSQL — pgrouting and pgr_dmmsy are auto-loaded
+docker compose up -d db
+
+# 3. Connect and run queries
+psql -h localhost -U postgres -d pgr_dmmsy_test
+
+# 4. Run the full verification suite against pgr_dijkstra
+bash docker/run_tests.sh
+
+# 5. Stop when done
+docker compose down
+```
+
+> For a complete guide to Docker usage, building from source, and project integration
+> see **[COMPILE.md](COMPILE.md)**.
+
+---
+
 ## Installation
 
 ### Prerequisites
 
-- PostgreSQL 12 or later
+- PostgreSQL 14 or later
+- pgRouting 3.x (required extension dependency)
 - PostgreSQL development headers (`postgresql-server-dev` on Debian/Ubuntu)
 - C compiler (gcc, clang)
 - make
+
+> For detailed per-platform instructions (Linux, macOS Apple Silicon, Docker) see **[COMPILE.md](COMPILE.md)**.
 
 ### Build and Install
 
@@ -127,14 +156,13 @@ make
 
 # Install (may require sudo)
 sudo make install
-
-# Run regression tests
-make installcheck
 ```
 
 ### Enable the Extension
 
 ```sql
+-- pgRouting must be created first (it is a declared dependency)
+CREATE EXTENSION pgrouting;
 CREATE EXTENSION pgr_dmmsy;
 ```
 
@@ -486,20 +514,48 @@ For production use cases, consider:
 
 ## Testing
 
-Run the regression test suite:
+`pgr_dmmsy` has three independent test layers:
+
+### Layer 1 — C Unit Tests (no PostgreSQL required)
+
+38 tests exercising the core algorithm, graph, and min-heap data structures.
+Compiles and runs in seconds with no database dependency.
+
+```bash
+cd test/c && make clean && make run
+```
+
+### Layer 2 — Regression Tests
 
 ```bash
 make installcheck
 ```
 
-This runs comprehensive tests including:
-- Simple paths
-- Graphs with branching
-- Undirected graphs
-- Complex multi-path scenarios
-- Disconnected graphs
-- Edge cases (self-loops, triangles)
-- Parameter validation
+Covers simple paths, branching, undirected graphs, disconnected graphs,
+edge cases (self-loops, triangles), and parameter validation.
+
+### Layer 3 — SQL Verification Suite
+
+Compares results against `pgr_dijkstra` across 6 graph families, validates
+SPT structure, tests topology and weight edge cases, integration scenarios,
+and DMMSY-specific invariants.
+
+```bash
+# Load the verify schema once
+psql -d mydb \
+  -f verify/sql/00_setup.sql \
+  -f verify/sql/01_generators.sql \
+  -f verify/sql/02_stub.sql
+
+# Run all suites (exits with failure count)
+bash verify/tests/run_all.sh mydb
+```
+
+Or with Docker (no local PostgreSQL required):
+
+```bash
+bash docker/run_tests.sh
+```
 
 ## Troubleshooting
 
@@ -526,20 +582,31 @@ CREATE EXTENSION IF NOT EXISTS pgr_dmmsy;
 
 ```
 pgr_dmmsy/
+├── src/
+│   ├── dmmsy.c / dmmsy.h       # PostgreSQL interface + main header
+│   ├── dmmsy_algorithm.c       # Core DMMSY algorithm
+│   ├── graph.c / graph.h       # Graph data structure
+│   ├── minheap.c / minheap.h   # Priority queue
+│   └── ds_blocklist.c/h        # Block-list (phase buckets)
 ├── sql/
 │   └── pgr_dmmsy--0.1.0.sql    # SQL function definitions
-├── src/
-│   ├── dmmsy.c                 # PostgreSQL interface
-│   ├── dmmsy.h                 # Main header
-│   ├── dmmsy_algorithm.c       # Core algorithm
-│   ├── graph.c/h               # Graph data structure
-│   ├── minheap.c/h             # Priority queue
-│   └── ds_blocklist.c/h        # Block list structure
 ├── test/
-│   ├── pgr_dmmsy.sql           # Test cases
-│   └── expected/               # Expected outputs
-├── Makefile                     # PGXS build system
+│   ├── c/                      # Standalone C unit tests (38 tests)
+│   ├── sql/                    # Integration SQL tests
+│   ├── expected/               # Regression expected outputs
+│   └── benchmark/              # Benchmark scripts
+├── verify/
+│   ├── sql/                    # Schema, generators, stubs
+│   └── tests/                  # 8 SQL test suites + run_all.sh
+├── docker/
+│   ├── initdb/                 # Auto-loaded on first container start
+│   └── run_tests.sh            # Convenience Docker test runner
+├── Dockerfile                  # Single-stage PG 16 image
+├── docker-compose.yml          # db + test services
+├── Makefile                    # PGXS build system
 ├── pgr_dmmsy.control           # Extension metadata
+├── COMPILE.md                  # Build & integration guide
+├── INSTALL.md                  # Quick install reference
 └── README.md
 ```
 

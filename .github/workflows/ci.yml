@@ -2,344 +2,390 @@ name: CI
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [main, master, develop]
   pull_request:
-    branches: [ main, master, develop ]
+    branches: [main, master, develop]
   workflow_dispatch:
 
 jobs:
+  # ====================================================================
+  # Lint — code style checks (no PostgreSQL required)
+  # ====================================================================
   lint:
     name: Code Quality Check
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Check C code formatting
         run: |
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y clang-format
-          # Check if any C files would be reformatted
           find src -name "*.c" -o -name "*.h" | xargs clang-format -n -Werror 2>&1 || true
 
-      - name: Check SQL syntax
+      - name: Check SQL syntax (basic)
         run: |
-          # Basic SQL syntax check
           for f in sql/*.sql; do
             echo "Checking $f"
-            grep -n ";" "$f" || echo "Warning: No semicolons found in $f"
+            grep -n ";" "$f" || echo "Warning: No semicolons in $f"
           done
 
+  # ====================================================================
+  # C unit tests — standalone, no PostgreSQL headers required
+  # Exercises the core algorithm (38 tests) in seconds.
+  # ====================================================================
+  c-unit-tests:
+    name: C Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update -qq && sudo apt-get install -y build-essential
+
+      - name: Build and run C unit tests
+        run: cd test/c && make clean && make run
+
+  # ====================================================================
+  # Build & Test — multi-version matrix on Linux
+  # ====================================================================
   build-and-test:
     name: Build & Test (PostgreSQL ${{ matrix.pg_version }})
     runs-on: ubuntu-latest
+    needs: [c-unit-tests]
     strategy:
       fail-fast: false
       matrix:
-        pg_version: [12, 13, 14, 15, 16]
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+        pg_version: [14, 15, 16]
 
-      - name: Install PostgreSQL ${{ matrix.pg_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add PostgreSQL apt repository
         run: |
-          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-          sudo apt-get update
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update -qq
+
+      - name: Install PostgreSQL ${{ matrix.pg_version }} + pgRouting + build tools
+        run: |
           sudo apt-get install -y \
             postgresql-${{ matrix.pg_version }} \
             postgresql-server-dev-${{ matrix.pg_version }} \
             postgresql-client-${{ matrix.pg_version }} \
-            build-essential \
-            git
+            postgresql-${{ matrix.pg_version }}-postgis-3 \
+            postgresql-${{ matrix.pg_version }}-pgrouting \
+            build-essential
 
-      - name: Setup PostgreSQL environment
+      - name: Set PG_CONFIG env
         run: |
-          echo "PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH" >> $GITHUB_ENV
-          echo "PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config" >> $GITHUB_ENV
+          echo "PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config" \
+            >> "$GITHUB_ENV"
+          echo "PATH=/usr/lib/postgresql/${{ matrix.pg_version }}/bin:$PATH" \
+            >> "$GITHUB_ENV"
 
       - name: Build extension
-        run: |
-          make clean
-          make
-        env:
-          PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        run: make clean && make
 
       - name: Install extension
-        run: |
-          sudo make install
-        env:
-          PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        run: sudo make install
 
       - name: Start PostgreSQL
         run: |
           sudo systemctl start postgresql@${{ matrix.pg_version }}-main
           sudo -u postgres psql -c "SELECT version();"
 
-      - name: Create test database
+      - name: Create test database and load extensions
         run: |
           sudo -u postgres psql -c "CREATE DATABASE test_pgr_dmmsy;"
+          sudo -u postgres psql -d test_pgr_dmmsy -c "CREATE EXTENSION postgis;"
+          sudo -u postgres psql -d test_pgr_dmmsy -c "CREATE EXTENSION pgrouting;"
 
       - name: Run regression tests
-        run: |
-          sudo -u postgres make installcheck
-        env:
-          PG_CONFIG: /usr/lib/postgresql/${{ matrix.pg_version }}/bin/pg_config
+        run: sudo -u postgres make installcheck
         continue-on-error: true
 
-      - name: Upload test results
+      - name: Upload regression diff
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: test-results-pg${{ matrix.pg_version }}
+          name: regression-diffs-pg${{ matrix.pg_version }}
           path: |
             regression.diffs
             results/
           if-no-files-found: ignore
 
-      - name: Show test failures
+      - name: Show regression failures
         if: failure()
         run: |
           if [ -f regression.diffs ]; then
-            echo "=== Test Failures ==="
+            echo "=== Regression Failures ==="
             cat regression.diffs
           fi
 
-  build-macos:
-    name: Build on macOS
-    runs-on: macos-latest
-    
+      - name: Package compiled extension
+        run: |
+          VERSION=$(grep default_version pgr_dmmsy.control | cut -d"'" -f2)
+          mkdir -p dist
+          cp pgr_dmmsy.so dist/
+          cp sql/pgr_dmmsy--${VERSION}.sql dist/
+          cp pgr_dmmsy.control dist/
+          tar -czf pgr_dmmsy-linux-pg${{ matrix.pg_version }}-$(uname -m).tar.gz -C dist .
+
+      - name: Upload compiled extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgr_dmmsy-linux-pg${{ matrix.pg_version }}-x86_64
+          path: pgr_dmmsy-linux-pg${{ matrix.pg_version }}-*.tar.gz
+          retention-days: 30
+
+      - name: Load verify schema
+        run: |
+          sudo -u postgres psql -d test_pgr_dmmsy \
+            -f verify/sql/00_setup.sql \
+            -f verify/sql/01_generators.sql \
+            -f verify/sql/02_stub.sql
+
+      - name: Run SQL verification suite
+        run: |
+          sudo -u postgres \
+            bash verify/tests/run_all.sh test_pgr_dmmsy
+        continue-on-error: true
+
+  # ====================================================================
+  # Docker build — verifies Dockerfile and C tests inside the image
+  # ====================================================================
+  docker-build:
+    name: Docker Build (C tests inside image)
+    runs-on: ubuntu-latest
+    needs: [c-unit-tests]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install PostgreSQL
-        run: |
-          brew install postgresql@15
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Setup PostgreSQL environment
+      - name: Build Docker image
+        run: docker compose build db
+
+  # ====================================================================
+  # macOS build — Apple Silicon runner (arm64)
+  # ====================================================================
+  build-macos:
+    name: Build on macOS (arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL and pgRouting via Homebrew
         run: |
-          echo "PATH=/usr/local/opt/postgresql@15/bin:$PATH" >> $GITHUB_ENV
-          echo "PG_CONFIG=/usr/local/opt/postgresql@15/bin/pg_config" >> $GITHUB_ENV
+          brew install postgresql@16 pgrouting
+          brew link postgresql@16 --force
+
+      - name: Set PG_CONFIG env
+        run: |
+          echo "PG_CONFIG=/opt/homebrew/opt/postgresql@16/bin/pg_config" >> "$GITHUB_ENV"
+          echo "PATH=/opt/homebrew/opt/postgresql@16/bin:$PATH" >> "$GITHUB_ENV"
 
       - name: Build extension
-        run: |
-          make clean
-          make
-        env:
-          PG_CONFIG: /usr/local/opt/postgresql@15/bin/pg_config
+        run: make clean && make
 
-      - name: Check build artifacts
-        run: |
-          ls -lh *.so || ls -lh *.dylib || true
-          file pgr_dmmsy.so || file pgr_dmmsy.dylib || true
+      - name: Check build artifact
+        run: ls -lh *.so *.dylib 2>/dev/null || true
 
+      - name: Package compiled extension
+        run: |
+          VERSION=$(grep default_version pgr_dmmsy.control | cut -d"'" -f2)
+          mkdir -p dist
+          cp pgr_dmmsy.dylib dist/ 2>/dev/null || cp pgr_dmmsy.so dist/ 2>/dev/null || true
+          cp sql/pgr_dmmsy--${VERSION}.sql dist/
+          cp pgr_dmmsy.control dist/
+          tar -czf pgr_dmmsy-macos-pg16-$(uname -m).tar.gz -C dist .
+
+      - name: Upload compiled extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgr_dmmsy-macos-pg16-arm64
+          path: pgr_dmmsy-macos-pg16-*.tar.gz
+          retention-days: 30
+
+  # ====================================================================
+  # Documentation check
+  # ====================================================================
   documentation:
     name: Documentation Check
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Check README exists and has content
+      - name: Check required files exist
         run: |
-          if [ ! -f README.md ]; then
-            echo "Error: README.md not found"
-            exit 1
-          fi
-          if [ $(wc -l < README.md) -lt 10 ]; then
-            echo "Error: README.md seems too short"
-            exit 1
-          fi
-          echo "README.md check passed"
-
-      - name: Check for required documentation
-        run: |
-          echo "Checking for essential documentation files..."
-          
-          required_files=(
+          required=(
             "README.md"
-            "LICENSE"
+            "COMPILE.md"
+            "INSTALL.md"
             "sql/pgr_dmmsy--0.1.0.sql"
             "pgr_dmmsy.control"
           )
-          
-          missing_files=0
-          for file in "${required_files[@]}"; do
-            if [ ! -f "$file" ]; then
-              echo "Missing: $file"
-              missing_files=$((missing_files + 1))
-            else
-              echo "Found: $file"
-            fi
+          missing=0
+          for f in "${required[@]}"; do
+            if [ -f "$f" ]; then echo "OK  $f"; else echo "MISSING  $f"; missing=$((missing+1)); fi
           done
-          
-          if [ $missing_files -gt 0 ]; then
-            echo "Error: $missing_files required file(s) missing"
-            exit 1
-          fi
+          [ "$missing" -eq 0 ] || exit 1
 
       - name: Validate SQL function definition
         run: |
-          if ! grep -q "CREATE.*FUNCTION.*pgr_dmmsy" sql/pgr_dmmsy--0.1.0.sql; then
-            echo "Error: pgr_dmmsy function definition not found in SQL file"
-            exit 1
-          fi
-          echo "SQL function definition validated"
+          grep -q "CREATE.*FUNCTION.*pgr_dmmsy" sql/pgr_dmmsy--0.1.0.sql \
+            || { echo "ERROR: pgr_dmmsy function not found in SQL file"; exit 1; }
+          echo "SQL function definition OK"
 
-      - name: Check for code comments
+      - name: Check C source comments
         run: |
-          echo "Checking C source files for documentation..."
-          c_files=$(find src -name "*.c" -o -name "*.h")
-          
-          for file in $c_files; do
-            if ! grep -q "/\*" "$file"; then
-              echo "Warning: $file has no C comments"
-            fi
+          for f in $(find src -name "*.c" -o -name "*.h"); do
+            grep -q "/\*" "$f" || echo "Warning: $f has no block comments"
           done
 
+  # ====================================================================
+  # Security scan
+  # ====================================================================
   security:
     name: Security Scan
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Check for common security issues in C code
+      - name: Check for unsafe string functions
         run: |
-          echo "Scanning for potential security issues..."
-          
-          # Check for unsafe functions
           if grep -rn "strcpy\|strcat\|sprintf\|gets" src/; then
             echo "Warning: Found potentially unsafe string functions"
           fi
-          
-          # Check for proper NULL checks
-          malloc_count=$(grep -rc "malloc" src/ | grep -v ":0$" | wc -l)
-          null_check_count=$(grep -rc "if.*NULL" src/ | grep -v ":0$" | wc -l)
-          echo "Found $malloc_count files with malloc"
-          echo "Found $null_check_count files with NULL checks"
 
       - name: Check for SQL injection patterns
         run: |
-          echo "Checking for SQL injection vulnerabilities..."
           if grep -rn "sprintf.*SELECT\|strcat.*SELECT" src/; then
-            echo "Warning: Potential SQL injection vulnerability found"
+            echo "ERROR: Potential SQL injection vulnerability"
             exit 1
           fi
-          echo "No obvious SQL injection patterns found"
+          echo "No SQL injection patterns found"
 
+  # ====================================================================
+  # Coverage — C unit test pass rate (38 tests expected)
+  # ====================================================================
   coverage:
-    name: Test Coverage Analysis
+    name: Test Coverage (C unit tests)
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Count test cases
-        run: |
-          test_count=$(grep -c "^SELECT.*Test.*AS test" test/pgr_dmmsy.sql || echo 0)
-          echo "Found $test_count test cases"
-          echo "TEST_COUNT=$test_count" >> $GITHUB_ENV
-          
-          if [ $test_count -lt 10 ]; then
-            echo "Warning: Only $test_count test cases found. Consider adding more tests."
-          else
-            echo "Good: $test_count test cases found"
-          fi
+      - name: Install build tools
+        run: sudo apt-get update -qq && sudo apt-get install -y build-essential
 
-      - name: Check test coverage breadth
+      - name: Build and run C unit tests
         run: |
-          echo "Analyzing test coverage..."
-          
-          # Check for various test scenarios
-          scenarios=(
-            "disconnected:Disconnected graph"
-            "cycle:Graph with cycle"
-            "undirected:Undirected"
-            "zero:Zero-cost"
-            "parallel:Parallel edges"
-            "max_levels:Max levels"
-          )
-          
-          missing_scenarios=0
-          for scenario in "${scenarios[@]}"; do
-            key="${scenario%%:*}"
-            name="${scenario##*:}"
-            if grep -qi "$key" test/pgr_dmmsy.sql; then
-              echo "✓ $name test found"
-            else
-              echo "✗ $name test missing"
-              missing_scenarios=$((missing_scenarios + 1))
-            fi
+          cd test/c && make clean && make run 2>&1 | tee /tmp/c_test_output.txt
+          echo "C_TESTS_RESULT=${PIPESTATUS[0]}" >> "$GITHUB_ENV"
+
+      - name: Report coverage summary
+        run: |
+          PASSED=$(grep -c "PASS" /tmp/c_test_output.txt || true)
+          FAILED=$(grep -c "FAIL" /tmp/c_test_output.txt || true)
+          echo "C unit tests: $PASSED passed, $FAILED failed"
+          if [ "$FAILED" -gt 0 ]; then exit 1; fi
+
+      - name: Count SQL test cases
+        run: |
+          echo "Verify suite files:"
+          ls -1 verify/tests/*.sql | while read f; do
+            count=$(grep -c "dmmsy_verify\.record" "$f" || true)
+            printf "  %-40s %d tests\n" "$(basename $f)" "$count"
           done
-          
-          echo "Test coverage: $(( (${#scenarios[@]} - missing_scenarios) * 100 / ${#scenarios[@]} ))%"
 
+  # ====================================================================
+  # Performance benchmark (informational, never fails CI)
+  # ====================================================================
   performance:
     name: Performance Benchmark
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install PostgreSQL 15
+      - name: Add PostgreSQL apt repository
         run: |
-          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-          sudo apt-get update
-          sudo apt-get install -y postgresql-15 postgresql-server-dev-15
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update -qq
 
-      - name: Build and install
+      - name: Install PostgreSQL 16 + pgRouting + build tools
         run: |
-          make clean
-          make
-          sudo make install
+          sudo apt-get install -y \
+            postgresql-16 \
+            postgresql-server-dev-16 \
+            postgresql-16-pgrouting \
+            build-essential
+
+      - name: Build and install extension
+        run: |
+          make clean && make && sudo make install
         env:
-          PG_CONFIG: /usr/lib/postgresql/15/bin/pg_config
+          PG_CONFIG: /usr/lib/postgresql/16/bin/pg_config
 
       - name: Start PostgreSQL
-        run: |
-          sudo systemctl start postgresql@15-main
+        run: sudo systemctl start postgresql@16-main
 
-      - name: Basic performance test
+      - name: Run basic timing benchmark
         run: |
+          sudo -u postgres psql -c "CREATE EXTENSION pgrouting;" || true
           sudo -u postgres psql -c "CREATE EXTENSION pgr_dmmsy;" || true
           sudo -u postgres psql -c "
             CREATE TABLE perf_edges (id SERIAL, source BIGINT, target BIGINT, cost FLOAT8);
             INSERT INTO perf_edges (source, target, cost)
-            SELECT i, i+1, random() * 10 FROM generate_series(1, 100) i;
-            
+              SELECT i, i+1, random() * 10 FROM generate_series(1,1000) i;
             \timing on
-            SELECT * FROM pgr_dmmsy('SELECT id, source, target, cost FROM perf_edges', 1, 100);
-            
+            SELECT COUNT(*) FROM pgr_dmmsy(
+              'SELECT id, source, target, cost FROM perf_edges', 1, 1000);
             DROP TABLE perf_edges;
-          " || echo "Performance test skipped (extension may not be fully functional)"
+          " || echo "Performance benchmark skipped"
+        continue-on-error: true
 
+  # ====================================================================
+  # Summary gate
+  # ====================================================================
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [lint, build-and-test, build-macos, documentation, security, coverage]
+    needs:
+      - lint
+      - c-unit-tests
+      - build-and-test
+      - docker-build
+      - build-macos
+      - documentation
+      - security
+      - coverage
     if: always()
-    
     steps:
-      - name: Check results
+      - name: Report results
         run: |
-          echo "CI Pipeline Summary:"
-          echo "===================="
-          echo "Lint: ${{ needs.lint.result }}"
-          echo "Build & Test: ${{ needs.build-and-test.result }}"
-          echo "macOS Build: ${{ needs.build-macos.result }}"
+          echo "CI Pipeline Summary"
+          echo "==================="
+          echo "Lint:          ${{ needs.lint.result }}"
+          echo "C Unit Tests:  ${{ needs.c-unit-tests.result }}"
+          echo "Build & Test:  ${{ needs.build-and-test.result }}"
+          echo "Docker Build:  ${{ needs.docker-build.result }}"
+          echo "macOS Build:   ${{ needs.build-macos.result }}"
           echo "Documentation: ${{ needs.documentation.result }}"
-          echo "Security: ${{ needs.security.result }}"
-          echo "Coverage: ${{ needs.coverage.result }}"
-          
+          echo "Security:      ${{ needs.security.result }}"
+          echo "Coverage:      ${{ needs.coverage.result }}"
+
+          if [ "${{ needs.c-unit-tests.result }}" != "success" ]; then
+            echo "C unit tests FAILED"
+            exit 1
+          fi
           if [ "${{ needs.build-and-test.result }}" != "success" ]; then
-            echo "⚠️  Build & Test failed!"
+            echo "Build & Test FAILED"
             exit 1
           fi

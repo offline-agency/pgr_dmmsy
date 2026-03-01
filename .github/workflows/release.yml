@@ -15,7 +15,8 @@ jobs:
   create-release:
     name: Create Release
     runs-on: ubuntu-latest
-    
+    outputs:
+      version: ${{ steps.get_version.outputs.VERSION }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -110,7 +111,10 @@ jobs:
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
           wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
           sudo apt-get update
-          sudo apt-get install -y postgresql-${{ matrix.pg_version }} postgresql-server-dev-${{ matrix.pg_version }}
+          sudo apt-get install -y \
+            postgresql-${{ matrix.pg_version }} \
+            postgresql-server-dev-${{ matrix.pg_version }} \
+            postgresql-${{ matrix.pg_version }}-pgrouting
 
       - name: Install PostgreSQL (macOS)
         if: runner.os == 'macOS'
@@ -138,8 +142,9 @@ jobs:
           tar -czf pgr_dmmsy-${VERSION}-${OS_NAME}-${ARCH}.tar.gz -C package .
 
       - name: Upload package artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: packages
+          name: pgr_dmmsy-${{ matrix.os }}-pg${{ matrix.pg_version }}-${{ needs.create-release.outputs.version }}
           path: pgr_dmmsy-*.tar.gz
+          retention-days: 90
 
