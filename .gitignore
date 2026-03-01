@@ -12,6 +12,14 @@ regression.diffs
 regression.out
 results/
 
+# C test binaries and macOS debug symbols
+test/c/test_graph
+test/c/test_minheap
+test/c/test_algorithm
+test/c/test_edge_cases
+test/c/test_ds_blocklist
+test/c/*.dSYM/
+
 # Editor files
 *~
 *.swp
