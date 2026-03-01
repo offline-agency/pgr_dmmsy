@@ -1,0 +1,72 @@
+# =============================================================
+# pgr_dmmsy — Docker Compose
+# =============================================================
+# Services:
+#   db    — PostgreSQL with pgRouting + pgr_dmmsy pre-loaded
+#   test  — Runs the full verify/ SQL suite (profile: test)
+#
+# Quick-start:
+#   docker compose up -d db          # start the database
+#   psql -h localhost -U postgres -d pgr_dmmsy_test
+#
+# Run the full verification suite:
+#   docker compose --profile test run --rm test
+# or use the convenience script:
+#   bash docker/run_tests.sh [--keep-db]
+# =============================================================
+
+services:
+
+  # ------------------------------------------------------------------
+  # db — development/test database
+  # ------------------------------------------------------------------
+  db:
+    build:
+      context: .
+      args:
+        PG_MAJOR: "16"
+    container_name: pgr_dmmsy_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pgr_dmmsy_test
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pgr_dmmsy_test"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+
+  # ------------------------------------------------------------------
+  # test — runs the verify/ SQL suite then exits
+  # Activated only with: docker compose --profile test run --rm test
+  # ------------------------------------------------------------------
+  test:
+    build:
+      context: .
+      args:
+        PG_MAJOR: "16"
+    profiles: ["test"]
+    entrypoint: ["bash", "-c"]
+    command: >
+      "
+      set -e;
+      echo '--- Waiting for database ---';
+      until pg_isready -h db -U postgres -d pgr_dmmsy_test; do
+        sleep 1;
+      done;
+      echo '--- Loading verify schema ---';
+      psql -h db -U postgres -d pgr_dmmsy_test
+        -f /pgr_dmmsy/verify/sql/00_setup.sql
+        -f /pgr_dmmsy/verify/sql/01_generators.sql
+        -f /pgr_dmmsy/verify/sql/02_stub.sql;
+      echo '--- Running verification suite ---';
+      bash /pgr_dmmsy/verify/tests/run_all.sh pgr_dmmsy_test -h db -U postgres;
+      "
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: postgres
