@@ -94,11 +94,15 @@ jobs:
 
       - name: Start PostgreSQL
         run: |
-          # Stop any pre-installed PostgreSQL so our version gets port 5432
+          # Stop pre-installed PG and drop any auto-created cluster.
+          # PGDG apt post-install creates PG15/16 clusters at 5433/5434
+          # while the pre-installed PG14 occupies 5432 during apt install,
+          # so pg_createcluster would otherwise start the cluster on the
+          # wrong port and pg_isready would loop forever.
           sudo systemctl stop postgresql || true
-          sudo pg_createcluster --start ${{ matrix.pg_version }} main 2>/dev/null || \
-            sudo pg_ctlcluster ${{ matrix.pg_version }} main start 2>/dev/null || true
-          until sudo -u postgres pg_isready -t 30; do sleep 1; done
+          sudo pg_dropcluster --stop ${{ matrix.pg_version }} main 2>/dev/null || true
+          sudo pg_createcluster --port 5432 --start ${{ matrix.pg_version }} main
+          until sudo -u postgres pg_isready -p 5432 -t 30; do sleep 1; done
           sudo -u postgres psql -c "SELECT version();"
 
       - name: Create test database and load extensions
