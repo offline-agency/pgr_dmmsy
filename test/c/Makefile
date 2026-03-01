@@ -11,8 +11,16 @@ MINHEAP_SRC = $(SRC_DIR)/minheap.c
 ALGORITHM_SRC = $(SRC_DIR)/dmmsy_algorithm.c
 BLOCKLIST_SRC = $(SRC_DIR)/ds_blocklist.c
 
+# Platform detection: --wrap is a GNU ld feature (Linux only)
+UNAME := $(shell uname)
+ifeq ($(UNAME),Linux)
+WRAP_FLAGS = -Wl,--wrap=malloc -Wl,--wrap=realloc -DWRAP_MALLOC
+else
+WRAP_FLAGS =
+endif
+
 # Test executables
-TESTS = test_graph test_minheap test_algorithm test_edge_cases
+TESTS = test_graph test_minheap test_algorithm test_edge_cases test_ds_blocklist
 
 .PHONY: all clean run
 
@@ -30,6 +38,9 @@ test_algorithm: test_algorithm.c $(ALGORITHM_SRC) $(GRAPH_SRC) $(MINHEAP_SRC) $(
 test_edge_cases: test_edge_cases.c $(ALGORITHM_SRC) $(GRAPH_SRC) $(MINHEAP_SRC) $(BLOCKLIST_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
+test_ds_blocklist: test_ds_blocklist.c $(BLOCKLIST_SRC)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(WRAP_FLAGS)
+
 run: all
 	@echo "Running C unit tests..."
 	@echo ""
@@ -41,10 +52,12 @@ run: all
 	@echo ""
 	@./test_edge_cases
 	@echo ""
+	@./test_ds_blocklist
+	@echo ""
 	@echo "✅ All C unit tests completed!"
 
 clean:
-	rm -f $(TESTS) *.o *.gcno *.gcda coverage.info
+	rm -f $(TESTS) *.o *.gcno *.gcda coverage.info coverage_raw.info
 	rm -rf coverage_html
 
 # ---------------------------------------------------------------
@@ -59,7 +72,7 @@ clean:
 coverage-build:
 	$(MAKE) clean
 	$(MAKE) CFLAGS="$(CFLAGS) --coverage" LDFLAGS="$(LDFLAGS) --coverage"
-	./test_graph && ./test_minheap && ./test_algorithm && ./test_edge_cases
+	./test_graph && ./test_minheap && ./test_algorithm && ./test_edge_cases && ./test_ds_blocklist
 
 # Convenience alias for local use: coverage-build + lcov.
 # Capture all .gcda data from this directory (relative source paths in .gcno
