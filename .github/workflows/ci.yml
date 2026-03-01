@@ -94,7 +94,9 @@ jobs:
 
       - name: Start PostgreSQL
         run: |
-          sudo systemctl start postgresql@${{ matrix.pg_version }}-main
+          sudo pg_ctlcluster ${{ matrix.pg_version }} main start || \
+            sudo systemctl start postgresql@${{ matrix.pg_version }}-main || true
+          until sudo -u postgres pg_isready; do sleep 1; done
           sudo -u postgres psql -c "SELECT version();"
 
       - name: Create test database and load extensions
@@ -334,7 +336,10 @@ jobs:
           PG_CONFIG: /usr/lib/postgresql/16/bin/pg_config
 
       - name: Start PostgreSQL
-        run: sudo systemctl start postgresql@16-main
+        run: |
+          sudo pg_ctlcluster 16 main start || \
+            sudo systemctl start postgresql@16-main || true
+          until sudo -u postgres pg_isready; do sleep 1; done
 
       - name: Run basic timing benchmark
         run: |
