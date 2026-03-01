@@ -94,6 +94,8 @@ jobs:
 
       - name: Start PostgreSQL
         run: |
+          # Stop any pre-installed PostgreSQL so our version gets port 5432
+          sudo systemctl stop postgresql || true
           sudo pg_createcluster --start ${{ matrix.pg_version }} main 2>/dev/null || \
             sudo pg_ctlcluster ${{ matrix.pg_version }} main start 2>/dev/null || true
           until sudo -u postgres pg_isready -t 30; do sleep 1; done
@@ -326,6 +328,7 @@ jobs:
           sudo apt-get install -y \
             postgresql-16 \
             postgresql-server-dev-16 \
+            postgresql-16-postgis-3 \
             postgresql-16-pgrouting \
             build-essential
 
@@ -343,17 +346,13 @@ jobs:
 
       - name: Run basic timing benchmark
         run: |
-          sudo -u postgres psql -c "CREATE EXTENSION pgrouting;" || true
-          sudo -u postgres psql -c "CREATE EXTENSION pgr_dmmsy;" || true
-          sudo -u postgres psql -c "
-            CREATE TABLE perf_edges (id SERIAL, source BIGINT, target BIGINT, cost FLOAT8);
-            INSERT INTO perf_edges (source, target, cost)
-              SELECT i, i+1, random() * 10 FROM generate_series(1,1000) i;
-            \timing on
-            SELECT COUNT(*) FROM pgr_dmmsy(
-              'SELECT id, source, target, cost FROM perf_edges', 1, 1000);
-            DROP TABLE perf_edges;
-          " || echo "Performance benchmark skipped"
+          sudo -u postgres psql -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+          sudo -u postgres psql -c "CREATE EXTENSION IF NOT EXISTS pgrouting CASCADE;"
+          sudo -u postgres psql -c "CREATE EXTENSION IF NOT EXISTS pgr_dmmsy;"
+          sudo -u postgres psql -c "CREATE TABLE perf_edges (id SERIAL, source BIGINT, target BIGINT, cost FLOAT8);"
+          sudo -u postgres psql -c "INSERT INTO perf_edges (source, target, cost) SELECT i, i+1, random()*10 FROM generate_series(1,1000) i;"
+          sudo -u postgres psql -c "EXPLAIN (ANALYZE, TIMING, FORMAT TEXT) SELECT COUNT(*) FROM pgr_dmmsy('SELECT id, source, target, cost FROM perf_edges', 1, 1000);"
+          sudo -u postgres psql -c "DROP TABLE perf_edges;"
         continue-on-error: true
 
   # ====================================================================
