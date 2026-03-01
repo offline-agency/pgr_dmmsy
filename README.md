@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/offline-agency/pgr_dmmsy/actions/workflows/ci.yml/badge.svg)](https://github.com/offline-agency/pgr_dmmsy/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/offline-agency/pgr_dmmsy/branch/main/graph/badge.svg)](https://codecov.io/gh/offline-agency/pgr_dmmsy)
+[![Latest Release](https://img.shields.io/github/v/release/offline-agency/pgr_dmmsy)](https://github.com/offline-agency/pgr_dmmsy/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/offline-agency/pgr_dmmsy/total)](https://github.com/offline-agency/pgr_dmmsy/releases)
 
 A PostgreSQL extension implementing the **DMMSY deterministic directed
 single-source shortest-path algorithm** from:
