@@ -135,7 +135,7 @@ psql -d mydb \
 bash verify/tests/run_all.sh mydb
 ```
 
-Mandatory suites (01–05, 07) must all pass. Suites 06 (performance) and 08 (invariants)
+Mandatory suites (01–05, 07, 09) must all pass. Suites 06 (performance) and 08 (invariants)
 are informational; failures are reported as warnings but do not affect the exit code.
 
 ---

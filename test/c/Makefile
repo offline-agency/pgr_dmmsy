@@ -44,5 +44,20 @@ run: all
 	@echo "✅ All C unit tests completed!"
 
 clean:
-	rm -f $(TESTS) *.o
+	rm -f $(TESTS) *.o *.gcno *.gcda coverage.info
+	rm -rf coverage_html
+
+# ---------------------------------------------------------------
+# Coverage target — rebuilds with gcov instrumentation, runs all
+# tests, then generates an lcov coverage.info for Codecov upload.
+# Does NOT affect the default 'all' / 'run' targets.
+# ---------------------------------------------------------------
+.PHONY: coverage
+coverage:
+	$(MAKE) clean
+	$(MAKE) CFLAGS="$(CFLAGS) --coverage" LDFLAGS="$(LDFLAGS) --coverage"
+	./test_graph && ./test_minheap && ./test_algorithm && ./test_edge_cases
+	lcov --capture --directory . --directory ../../src \
+	     --output-file coverage.info --no-external
+	lcov --remove coverage.info '*/test_*' --output-file coverage.info
 

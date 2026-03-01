@@ -1,97 +1,68 @@
-# Installation Guide
+# Installation Quick Reference
 
 ## Prerequisites
 
-- PostgreSQL 12 or later
-- PostgreSQL development headers
-- C compiler (gcc/clang)
-- make
+- PostgreSQL **14** or later
+- pgRouting 3.x (required extension dependency)
+- PostgreSQL development headers (`postgresql-server-dev-NN`)
+- C compiler (gcc / clang) and GNU Make
 
-## Architecture Note (macOS)
-
-On macOS with Apple Silicon (M1/M2), ensure PostgreSQL is installed for the correct architecture:
+## Build and Install
 
 ```bash
-# Check PostgreSQL architecture
-file /usr/local/Cellar/postgresql@15/15.14/bin/postgres
-
-# If mismatch, reinstall PostgreSQL for arm64
-arch -arm64 brew reinstall postgresql@15
-```
-
-Or use Rosetta to build for x86_64:
-
-```bash
-arch -x86_64 make
-```
-
-## Build Instructions
-
-```bash
-# Clean previous builds
-make clean
-
-# Build the extension
 make
-
-# Install (requires sudo)
 sudo make install
-
-# Run tests
-make installcheck
 ```
 
-## Enable in PostgreSQL
+To target a specific PostgreSQL version:
+
+```bash
+make PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config
+sudo make install PG_CONFIG=/usr/lib/postgresql/16/bin/pg_config
+```
+
+## Enable in a Database
 
 ```sql
+-- pgRouting must be installed first (declared dependency)
+CREATE EXTENSION pgrouting;
 CREATE EXTENSION pgr_dmmsy;
 ```
 
-## Verify Installation
+## Verify
 
 ```sql
-SELECT * FROM pg_available_extensions WHERE name = 'pgr_dmmsy';
-```
-
-## Troubleshooting
-
-### Architecture Mismatch (macOS)
-
-If you see errors like:
-```
-ld: warning: ignoring file '.../postgres': found architecture 'x86_64', required architecture 'arm64'
-```
-
-Solution:
-1. Reinstall PostgreSQL for the correct architecture
-2. Or compile with matching architecture using `arch` command
-
-### Missing pg_config
-
-```bash
-# macOS with Homebrew
-export PATH="/usr/local/opt/postgresql@15/bin:$PATH"
-
-# Linux (Debian/Ubuntu)
-sudo apt-get install postgresql-server-dev-15
-```
-
-### Permission Denied
-
-```bash
-# Use sudo for installation
-sudo make install
+SELECT extversion FROM pg_extension WHERE extname = 'pgr_dmmsy';
 ```
 
 ## Uninstall
 
 ```sql
--- In PostgreSQL
 DROP EXTENSION pgr_dmmsy;
 ```
 
 ```bash
-# Remove files
 sudo make uninstall
 ```
 
+## Troubleshooting
+
+**`pg_config: command not found`** — add PostgreSQL's `bin/` to your PATH:
+```bash
+export PATH="/usr/lib/postgresql/16/bin:$PATH"          # Linux
+export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH" # macOS Apple Silicon
+```
+
+**Architecture mismatch on macOS** — reinstall for the correct architecture:
+```bash
+arch -arm64 brew reinstall postgresql@16
+```
+
+**`ERROR: required extension "pgrouting" is not installed`**
+```sql
+CREATE EXTENSION pgrouting;
+CREATE EXTENSION pgr_dmmsy;
+```
+
+See **[COMPILE.md](COMPILE.md)** for complete platform-specific instructions
+and Docker workflow.

@@ -279,7 +279,7 @@ jobs:
           echo "No SQL injection patterns found"
 
   # ====================================================================
-  # Coverage — C unit test pass rate (38 tests expected)
+  # Coverage — gcov-instrumented C unit tests + Codecov upload
   # ====================================================================
   coverage:
     name: Test Coverage (C unit tests)
@@ -287,20 +287,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build tools
-        run: sudo apt-get update -qq && sudo apt-get install -y build-essential
+      - name: Install build + coverage tools
+        run: sudo apt-get update -qq && sudo apt-get install -y build-essential lcov
 
-      - name: Build and run C unit tests
+      - name: Build and run C unit tests with coverage
         run: |
-          cd test/c && make clean && make run 2>&1 | tee /tmp/c_test_output.txt
-          echo "C_TESTS_RESULT=${PIPESTATUS[0]}" >> "$GITHUB_ENV"
+          cd test/c && make coverage 2>&1 | tee /tmp/c_test_output.txt
 
-      - name: Report coverage summary
+      - name: Report test results
         run: |
           PASSED=$(grep -c "PASS" /tmp/c_test_output.txt || true)
           FAILED=$(grep -c "FAIL" /tmp/c_test_output.txt || true)
           echo "C unit tests: $PASSED passed, $FAILED failed"
           if [ "$FAILED" -gt 0 ]; then exit 1; fi
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: test/c/coverage.info
+          flags: c-unit-tests
+          fail_ci_if_error: false
 
       - name: Count SQL test cases
         run: |
