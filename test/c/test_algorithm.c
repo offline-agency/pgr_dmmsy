@@ -447,6 +447,61 @@ void test_distance_monotonicity_along_path(void) {
     PASS();
 }
 
+void test_dmmsy_result_free_null(void) {
+    TEST("dmmsy_result_free_null");
+    dmmsy_result_free(NULL);   /* must not crash */
+    PASS();
+}
+
+void test_dmmsy_get_path_null_graph(void) {
+    TEST("dmmsy_get_path_null_graph");
+    /* Build a real result to pass a non-NULL result */
+    Graph *graph = graph_create(5);
+    Edge e = {1, 1, 2, 1.0};
+    graph_add_edge(graph, &e);
+    DMMSYParams params = {.source=1, .target=2, .directed=true,
+                          .output_predecessors=true, .max_levels=-1,
+                          .param_k=-1, .param_t=-1, .constant_degree=false};
+    DMMSYResult *result = dmmsy_compute(graph, &params);
+    int path_length;
+    PathResult *path = dmmsy_get_path(NULL, result, 1, 2, &path_length);
+    assert(path == NULL);
+    dmmsy_result_free(result);
+    graph_free(graph);
+    PASS();
+}
+
+void test_dmmsy_get_path_null_result(void) {
+    TEST("dmmsy_get_path_null_result");
+    Graph *graph = graph_create(5);
+    Edge e = {1, 1, 2, 1.0};
+    graph_add_edge(graph, &e);
+    int path_length;
+    PathResult *path = dmmsy_get_path(graph, NULL, 1, 2, &path_length);
+    assert(path == NULL);
+    graph_free(graph);
+    PASS();
+}
+
+void test_dmmsy_get_path_target_not_in_graph(void) {
+    TEST("dmmsy_get_path_target_not_in_graph");
+    Graph *graph = graph_create(5);
+    Edge e = {1, 1, 2, 1.0};
+    graph_add_edge(graph, &e);
+    DMMSYParams params = {.source=1, .target=-1, .directed=true,
+                          .output_predecessors=true, .max_levels=-1,
+                          .param_k=-1, .param_t=-1, .constant_degree=false};
+    DMMSYResult *result = dmmsy_compute(graph, &params);
+    int path_length;
+    /* vertex 999 was never added → target_idx < 0 → NULL */
+    PathResult *path = dmmsy_get_path(graph, result, 1, 999, &path_length);
+    assert(path == NULL);
+    assert(path_length == 0);
+    dmmsy_result_free(result);
+    graph_free(graph);
+    PASS();
+}
+
 int main(void) {
     printf("=== Algorithm Unit Tests ===\n\n");
 
@@ -463,6 +518,12 @@ int main(void) {
     test_bellman_ford_rounds_settle_chain();
     test_k_t_params_produce_same_distances();
     test_distance_monotonicity_along_path();
+
+    /* NULL / missing-vertex guards */
+    test_dmmsy_result_free_null();
+    test_dmmsy_get_path_null_graph();
+    test_dmmsy_get_path_null_result();
+    test_dmmsy_get_path_target_not_in_graph();
 
     printf("\n✅ All algorithm tests passed!\n");
     return 0;

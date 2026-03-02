@@ -189,9 +189,65 @@ void test_minheap_zero_priority(void) {
     PASS();
 }
 
+void test_minheap_free_null(void) {
+    TEST("minheap_free_null");
+    minheap_free(NULL);   /* must not crash */
+    PASS();
+}
+
+void test_minheap_insert_when_full(void) {
+    TEST("minheap_insert_when_full");
+    MinHeap *heap = minheap_create(2, 100);
+    minheap_insert(heap, 1, 10.0);
+    minheap_insert(heap, 2, 20.0);
+    /* capacity == 2; this insert is silently dropped */
+    minheap_insert(heap, 3, 5.0);
+    assert(heap->size == 2);
+    minheap_free(heap);
+    PASS();
+}
+
+void test_minheap_insert_vertex_overflow(void) {
+    TEST("minheap_insert_vertex_overflow");
+    MinHeap *heap = minheap_create(10, 5);   /* max_vertex = 5 */
+    minheap_insert(heap, 6, 1.0);            /* vertex 6 > max_vertex → no-op */
+    assert(heap->size == 0);
+    minheap_free(heap);
+    PASS();
+}
+
+void test_minheap_decrease_key_vertex_overflow(void) {
+    TEST("minheap_decrease_key_vertex_overflow");
+    MinHeap *heap = minheap_create(10, 5);
+    minheap_insert(heap, 1, 10.0);
+    minheap_decrease_key(heap, 6, 1.0);   /* vertex 6 > max_vertex → early return */
+    assert(heap->size == 1);
+    minheap_free(heap);
+    PASS();
+}
+
+void test_minheap_decrease_key_not_in_heap(void) {
+    TEST("minheap_decrease_key_not_in_heap");
+    MinHeap *heap = minheap_create(10, 100);
+    minheap_insert(heap, 1, 10.0);
+    minheap_decrease_key(heap, 5, 1.0);   /* vertex 5 not inserted → idx<0 → early return */
+    assert(heap->size == 1);
+    minheap_free(heap);
+    PASS();
+}
+
+void test_minheap_contains_vertex_overflow(void) {
+    TEST("minheap_contains_vertex_overflow");
+    MinHeap *heap = minheap_create(10, 5);
+    bool result = minheap_contains(heap, 6);  /* vertex 6 > max_vertex → false */
+    assert(!result);
+    minheap_free(heap);
+    PASS();
+}
+
 int main(void) {
     printf("=== MinHeap Unit Tests ===\n\n");
-    
+
     test_minheap_create();
     test_minheap_insert_extract();
     test_minheap_decrease_key();
@@ -200,7 +256,13 @@ int main(void) {
     test_minheap_equal_priorities();
     test_minheap_many_operations();
     test_minheap_zero_priority();
-    
+    test_minheap_free_null();
+    test_minheap_insert_when_full();
+    test_minheap_insert_vertex_overflow();
+    test_minheap_decrease_key_vertex_overflow();
+    test_minheap_decrease_key_not_in_heap();
+    test_minheap_contains_vertex_overflow();
+
     printf("\n✅ All minheap tests passed!\n");
     return 0;
 }

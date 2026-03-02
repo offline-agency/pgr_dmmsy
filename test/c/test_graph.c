@@ -178,9 +178,24 @@ void test_graph_large_vertex_ids(void) {
     PASS();
 }
 
+void test_graph_free_null(void) {
+    TEST("graph_free_null");
+    graph_free(NULL);   /* must not crash */
+    PASS();
+}
+
+void test_graph_create_zero_capacity(void) {
+    TEST("graph_create_zero_capacity");
+    Graph *graph = graph_create(0);  /* triggers the ternary else → cap = 100 */
+    assert(graph != NULL);
+    assert(graph->vertex_capacity == 100);
+    graph_free(graph);
+    PASS();
+}
+
 int main(void) {
     printf("=== Graph Unit Tests ===\n\n");
-    
+
     test_graph_create();
     test_graph_add_vertex();
     test_graph_get_vertex_index();
@@ -189,7 +204,9 @@ int main(void) {
     test_graph_multiple_edges();
     test_graph_reverse_edge();
     test_graph_large_vertex_ids();
-    
+    test_graph_free_null();
+    test_graph_create_zero_capacity();
+
     printf("\n✅ All graph tests passed!\n");
     return 0;
 }

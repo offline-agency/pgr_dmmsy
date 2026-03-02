@@ -14,13 +14,13 @@ BLOCKLIST_SRC = $(SRC_DIR)/ds_blocklist.c
 # Platform detection: --wrap is a GNU ld feature (Linux only)
 UNAME := $(shell uname)
 ifeq ($(UNAME),Linux)
-WRAP_FLAGS = -Wl,--wrap=malloc -Wl,--wrap=realloc -DWRAP_MALLOC
+WRAP_FLAGS = -Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=realloc -DWRAP_MALLOC
 else
 WRAP_FLAGS =
 endif
 
 # Test executables
-TESTS = test_graph test_minheap test_algorithm test_edge_cases test_ds_blocklist
+TESTS = test_graph test_minheap test_algorithm test_edge_cases test_ds_blocklist test_malloc_failures
 
 .PHONY: all clean run
 
@@ -41,6 +41,9 @@ test_edge_cases: test_edge_cases.c $(ALGORITHM_SRC) $(GRAPH_SRC) $(MINHEAP_SRC) 
 test_ds_blocklist: test_ds_blocklist.c $(BLOCKLIST_SRC)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(WRAP_FLAGS)
 
+test_malloc_failures: test_malloc_failures.c $(GRAPH_SRC) $(MINHEAP_SRC) $(ALGORITHM_SRC) $(BLOCKLIST_SRC)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(WRAP_FLAGS)
+
 run: all
 	@echo "Running C unit tests..."
 	@echo ""
@@ -53,6 +56,8 @@ run: all
 	@./test_edge_cases
 	@echo ""
 	@./test_ds_blocklist
+	@echo ""
+	@./test_malloc_failures
 	@echo ""
 	@echo "✅ All C unit tests completed!"
 
@@ -72,7 +77,7 @@ clean:
 coverage-build:
 	$(MAKE) clean
 	$(MAKE) CFLAGS="$(CFLAGS) --coverage" LDFLAGS="$(LDFLAGS) --coverage"
-	./test_graph && ./test_minheap && ./test_algorithm && ./test_edge_cases && ./test_ds_blocklist
+	./test_graph && ./test_minheap && ./test_algorithm && ./test_edge_cases && ./test_ds_blocklist && ./test_malloc_failures
 
 # Convenience alias for local use: coverage-build + lcov.
 # Capture all .gcda data from this directory (relative source paths in .gcno
