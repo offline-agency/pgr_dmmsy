@@ -447,6 +447,26 @@ void test_distance_monotonicity_along_path(void) {
     PASS();
 }
 
+void test_dmmsy_compute_source_not_in_graph(void) {
+    TEST("dmmsy_compute_source_not_in_graph");
+    Graph *graph = graph_create(5);
+    graph_add_vertex(graph, 99);   /* non-empty graph, but no vertex 1 */
+    DMMSYParams params = {
+        .source = 1,               /* source absent → source_idx < 0 */
+        .target = -1,
+        .directed = true,
+        .output_predecessors = true,
+        .max_levels = -1,
+        .param_k = -1,
+        .param_t = -1,
+        .constant_degree = false
+    };
+    DMMSYResult *result = dmmsy_compute(graph, &params);
+    assert(result == NULL);
+    graph_free(graph);
+    PASS();
+}
+
 void test_dmmsy_result_free_null(void) {
     TEST("dmmsy_result_free_null");
     dmmsy_result_free(NULL);   /* must not crash */
@@ -520,6 +540,7 @@ int main(void) {
     test_distance_monotonicity_along_path();
 
     /* NULL / missing-vertex guards */
+    test_dmmsy_compute_source_not_in_graph();
     test_dmmsy_result_free_null();
     test_dmmsy_get_path_null_graph();
     test_dmmsy_get_path_null_result();
