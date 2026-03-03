@@ -209,6 +209,3 @@ directories, then `CREATE EXTENSION pgr_dmmsy`.
 - PostgreSQL extensions: [postgresql.org/docs](https://www.postgresql.org/docs/current/extend-pgxs.html)
 
 ---
-
-**Note:** Research-grade implementation. For production routing workloads,
-consider pgRouting's mature Dijkstra implementation as a baseline.
