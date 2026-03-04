@@ -522,6 +522,53 @@ void test_dmmsy_get_path_target_not_in_graph(void) {
     PASS();
 }
 
+/*
+ * Covers lines 249 and 255 in dmmsy_algorithm.c (minheap_decrease_key inside
+ * STEP A BF): a cheap frontier vertex discovers shorter 2-hop paths to vertices
+ * that were already inserted into the heap via expensive direct edges.
+ *
+ * With k=2, t=1: delta = 3.0*2/4 = 1.5 (phase_upper = 1.5)
+ *   BF round 0: 1->3 and 1->4 go to heap (dv >= 1.5)
+ *   BF round 1: vertex 2 (in frontier) relaxes:
+ *     2->3  total=1.0 < 1.5  -> decrease_key from 3.0 to 1.0  (line 249)
+ *     2->4  total=2.5 >= 1.5 -> decrease_key from 3.0 to 2.5  (line 255)
+ */
+void test_bf_step_a_decrease_key(void) {
+    TEST("bf_step_a_decrease_key");
+
+    Graph *graph = graph_create(10);
+    Edge e1 = {1, 1, 2, 0.5};
+    Edge e2 = {2, 1, 3, 3.0};   /* direct: expensive, goes to heap */
+    Edge e3 = {3, 1, 4, 3.0};   /* direct: expensive, goes to heap */
+    Edge e4 = {4, 2, 3, 0.5};   /* 2-hop: 1->2->3 total=1.0 < phase_upper */
+    Edge e5 = {5, 2, 4, 2.0};   /* 2-hop: 1->2->4 total=2.5 >= phase_upper */
+
+    graph_add_edge(graph, &e1);
+    graph_add_edge(graph, &e2);
+    graph_add_edge(graph, &e3);
+    graph_add_edge(graph, &e4);
+    graph_add_edge(graph, &e5);
+
+    DMMSYParams params = {
+        .source = 1, .target = -1, .directed = true,
+        .output_predecessors = true, .max_levels = -1,
+        .param_k = 2, .param_t = 1, .constant_degree = false
+    };
+
+    DMMSYResult *result = dmmsy_compute(graph, &params);
+    assert(result != NULL);
+
+    int64_t idx3 = graph_get_vertex_index(graph, 3);
+    int64_t idx4 = graph_get_vertex_index(graph, 4);
+
+    assert(double_equal(result->distances[idx3], 1.0));   /* via 1->2->3 */
+    assert(double_equal(result->distances[idx4], 2.5));   /* via 1->2->4 */
+
+    dmmsy_result_free(result);
+    graph_free(graph);
+    PASS();
+}
+
 int main(void) {
     printf("=== Algorithm Unit Tests ===\n\n");
 
@@ -545,6 +592,9 @@ int main(void) {
     test_dmmsy_get_path_null_graph();
     test_dmmsy_get_path_null_result();
     test_dmmsy_get_path_target_not_in_graph();
+
+    /* BF STEP A: minheap_decrease_key coverage (lines 249 and 255) */
+    test_bf_step_a_decrease_key();
 
     printf("\n✅ All algorithm tests passed!\n");
     return 0;
